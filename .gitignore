@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.env
+
+# PDF rulebooks ARE tracked in this repo (see data/rulebooks/). Only the
+# derived search index cache is ignored, since it's rebuilt automatically.
+data/rulebooks/.index/
