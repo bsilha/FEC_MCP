@@ -41,15 +41,26 @@ class SourceInfo:
     pages: int
 
 
-def _sanitize_fts_query(query: str) -> str:
-    """Strip FTS5 special syntax so arbitrary user input can't break the query.
+def _build_fts_query(query: str) -> str:
+    """Turn free-text user input into a safe, forgiving FTS5 MATCH expression.
 
-    Keeps letters, digits, whitespace and hyphens; everything else becomes a
-    space. Adjacent bareword tokens are ANDed together by FTS5 by default.
+    Strips FTS5 special syntax (keeping only letters and digits per token) so
+    arbitrary input can't break the query, then OR-joins the terms. Hyphens
+    are stripped too, not preserved: FTS5's query parser treats a hyphen as a
+    NOT/column-filter operator (so "in-kind" errors out as an invalid query),
+    while the index's own tokenizer already splits stored text on hyphens
+    (so "in-kind" is indexed as separate "in"/"kind" tokens) -- preserving
+    hyphens in the query just created a mismatch that silently dropped
+    matches. FTS5's default is to AND adjacent bareword tokens, which is too
+    strict for natural-language questions: a page matching 11 of 12 query
+    words would be excluded entirely. ORing the terms and relying on bm25()
+    ranking (already used by callers) surfaces the best-matching pages first
+    while still returning partial matches instead of nothing.
     """
-    cleaned = re.sub(r"[^\w\s-]", " ", query, flags=re.UNICODE)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
+    cleaned = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
+    reserved = {"OR", "AND", "NOT", "NEAR"}
+    tokens = [f'"{t}"' if t in reserved else t for t in cleaned.split()]
+    return " OR ".join(tokens)
 
 
 def _pdf_title(reader: PdfReader, fallback: str) -> str:
@@ -162,7 +173,7 @@ class RulebookIndex:
 
     def search(self, query: str, top_k: int = 8, source: str | None = None) -> list[SearchHit]:
         conn = self.ensure_built()
-        fts_query = _sanitize_fts_query(query)
+        fts_query = _build_fts_query(query)
         if not fts_query:
             return []
 

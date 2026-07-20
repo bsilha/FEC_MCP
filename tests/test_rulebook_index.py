@@ -93,6 +93,55 @@ def test_query_sanitization_does_not_raise(tmp_path):
     assert idx.search("") == []
 
 
+def test_partial_term_match_ranks_but_does_not_exclude(tmp_path, monkeypatch):
+    """Regression test: multi-word queries used to AND all terms together,
+    so a page missing even one query word was excluded entirely. Terms are
+    now OR-ed (with bm25 ranking), so a page matching most-but-not-all terms
+    should still come back."""
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    pdf_path = tmp_path / "guide.pdf"
+    _write_dummy_pdf(
+        pdf_path,
+        ["A leadership PAC contribution to a candidate authorized committee is limited."],
+    )
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    # Query includes "versus", which never appears in the page text.
+    hits = idx.search("leadership PAC contribution limit versus candidate authorized committee")
+    assert len(hits) == 1
+    assert hits[0].page == 1
+
+
+def test_hyphenated_query_terms_still_match(tmp_path, monkeypatch):
+    """Regression test: FTS5 parses a bare hyphen as a NOT/column-filter
+    operator, so querying "in-kind" used to raise a syntax error (swallowed
+    into zero results) even when the page contains "in-kind" text (which the
+    index itself tokenizes as separate "in"/"kind" tokens)."""
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    pdf_path = tmp_path / "guide.pdf"
+    _write_dummy_pdf(pdf_path, ["Use of a corporate facility counts as an in-kind contribution."])
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    hits = idx.search("in-kind contribution")
+    assert len(hits) == 1
+    assert hits[0].page == 1
+
+
+def test_reserved_fts_keywords_as_literal_query_terms(tmp_path, monkeypatch):
+    """A query containing the literal word "OR" (uppercase) must not raise,
+    since bare uppercase OR/AND/NOT/NEAR are FTS5 operators."""
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    pdf_path = tmp_path / "guide.pdf"
+    _write_dummy_pdf(pdf_path, ["Individual OR PAC contributions are both allowed."])
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    hits = idx.search("Individual OR PAC")
+    assert len(hits) == 1
+
+
 def test_source_filter(tmp_path, monkeypatch):
     monkeypatch.setattr(ri, "PdfReader", FakeReader)
 
