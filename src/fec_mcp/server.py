@@ -403,6 +403,19 @@ async def search_disbursements(
     contributions/transfers to other committees, operating expenditures,
     refunds.
 
+    IMPORTANT -- always pass min_date (and usually max_date) unless the user
+    explicitly wants full history: high-volume committees (large-scale
+    fundraising conduits, national party committees, etc.) can have
+    hundreds of thousands of disbursements, and an unfiltered query against
+    them is slow enough to time out, and even when it succeeds returns a
+    `pagination.count` that OpenFEC computes as a rough approximation (see
+    `pagination.is_count_exact` -- when false, don't treat count/pages as
+    reliable). For "recent" disbursements with no date given, default to
+    something like the last 90 days rather than querying all history. A
+    `Network error ... ReadTimeout` result means the query was too broad --
+    narrow the date range (and/or add disbursement_purpose_category) and
+    retry rather than repeating the same unfiltered call.
+
     IMPORTANT -- to find how much a committee gave to *party* committees
     specifically: OpenFEC has no working server-side filter for the
     recipient's committee type, so (1) set disbursement_purpose_category to

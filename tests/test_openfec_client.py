@@ -64,6 +64,22 @@ async def test_network_error_raises_openfec_error(client):
         await client.get_committee("C123")
 
 
+async def test_network_error_with_empty_message_still_actionable(client):
+    """Regression test: httpx timeout errors often carry an empty message
+    (str(exc) == ""), which used to produce an OpenFECError like
+    "Network error calling OpenFEC API (/path): " with no actual detail.
+    The exception type name must always be present so the caller can tell
+    a timeout apart from a DNS failure, etc."""
+    import httpx
+
+    async def raise_timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("")
+
+    client._client.get = raise_timeout
+    with pytest.raises(OpenFECError, match="ReadTimeout"):
+        await client.search_disbursements(committee_id="C00401224")
+
+
 def test_default_api_key_from_env(monkeypatch):
     monkeypatch.delenv("FEC_API_KEY", raising=False)
     c = OpenFECClient()

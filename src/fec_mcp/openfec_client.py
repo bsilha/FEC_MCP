@@ -56,7 +56,15 @@ class OpenFECClient:
         try:
             resp = await self._client.get(path, params=query)
         except httpx.RequestError as exc:
-            raise OpenFECError(f"Network error calling OpenFEC API ({path}): {exc}") from exc
+            # httpx timeout errors (the common case for the heavier schedule_b
+            # queries) frequently carry an empty message, so `{exc}` alone can
+            # render as blank -- always include the exception type so callers
+            # get an actionable signal (e.g. "ReadTimeout" implies the query
+            # was too broad/slow, not a connectivity failure).
+            detail = str(exc) or "no further detail from httpx"
+            raise OpenFECError(
+                f"Network error calling OpenFEC API ({path}): {type(exc).__name__}: {detail}"
+            ) from exc
 
         if resp.status_code == 429:
             raise OpenFECError(
