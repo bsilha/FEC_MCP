@@ -1,9 +1,10 @@
 """Thin async client for the live OpenFEC API (https://api.open.fec.gov/v1).
 
-Covers candidate, committee, filing, financial-totals, election, and
-reporting-calendar lookups. Does NOT cover contribution limits or regulation
-text -- OpenFEC has no endpoint for those; see rulebook_index.py for that,
-which searches the official FEC PDF guides instead.
+Covers candidate, committee, filing, financial-totals, disbursement
+(Schedule B), election, and reporting-calendar lookups. Does NOT cover
+contribution limits or regulation text -- OpenFEC has no endpoint for
+those; see rulebook_index.py for that, which searches the official FEC PDF
+guides instead.
 """
 
 from __future__ import annotations
@@ -15,6 +16,20 @@ import httpx
 
 BASE_URL = "https://api.open.fec.gov/v1"
 DEFAULT_TIMEOUT = 20.0
+
+# The OpenFEC /calendar-dates/ endpoint filters on calendar_category_id (int),
+# not a category name -- this maps the friendly names this client exposes to
+# the underlying id(s). There's no year-only filter either; callers must use
+# min_start_date/max_start_date instead.
+CALENDAR_CATEGORIES: dict[str, list[int]] = {
+    "reporting-dates": [25, 26, 27],  # Quarterly, Monthly, Pre/Post-Election reports
+    "quarterly": [25],
+    "monthly": [26],
+    "pre-post-election": [27],
+    "election-dates": [36],
+    "ec-periods": [28],  # electioneering communications periods
+    "ie-periods": [29],  # independent expenditure periods, incl. 24/48-hour notices
+}
 
 
 class OpenFECError(RuntimeError):
@@ -140,6 +155,60 @@ class OpenFECClient:
             f"/committee/{committee_id}/totals/", {"cycle": cycle, "per_page": per_page}
         )
 
+    # -- Disbursements (Schedule B) ---------------------------------------
+
+    async def search_disbursements(
+        self,
+        committee_id: str | None = None,
+        recipient_name: str | None = None,
+        disbursement_purpose_category: str | None = None,
+        disbursement_description: str | None = None,
+        min_date: str | None = None,
+        max_date: str | None = None,
+        min_amount: float | None = None,
+        max_amount: float | None = None,
+        cycle: int | None = None,
+        per_page: int = 20,
+        last_indexes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # NOTE: OpenFEC's /schedules/schedule_b/ endpoint has no working
+        # filter for the *recipient's* committee type (a `recipient_committee_type`
+        # param does not error, but silently matches everything). The only
+        # real server-side way to narrow down to money given to other
+        # committees is `disbursement_purpose_category` (validated enum:
+        # ADMINISTRATIVE, ADVERTISING, CONTRIBUTIONS, EVENTS, FUNDRAISING,
+        # LOAN-REPAYMENTS, MATERIALS, OTHER, POLLING, REFUNDS, TRANSFERS,
+        # TRAVEL) -- "CONTRIBUTIONS" and "TRANSFERS" are the categories used
+        # for gifts/transfers to other committees. Each returned record does
+        # include entity_type/entity_type_desc and a nested recipient_committee
+        # object (with committee_type_full) identifying the recipient as a
+        # party committee etc. -- filter on those client-side after fetching.
+        #
+        # Also note: this endpoint's `page` param is broken (page=2 silently
+        # returns the same records as page=1) -- it requires Elasticsearch-style
+        # cursor pagination instead: pass the *previous* response's
+        # pagination.last_indexes dict back in as `last_indexes` to get the
+        # next page. Both last_index and last_disbursement_date (the cursor
+        # field matching our fixed -disbursement_date sort) must travel
+        # together or the API 422s.
+        params = {
+            "committee_id": committee_id,
+            "recipient_name": recipient_name,
+            "disbursement_purpose_category": disbursement_purpose_category,
+            "disbursement_description": disbursement_description,
+            "min_date": min_date,
+            "max_date": max_date,
+            "min_amount": min_amount,
+            "max_amount": max_amount,
+            "cycle": cycle,
+            "per_page": per_page,
+            "sort": "-disbursement_date",
+        }
+        if last_indexes:
+            params["last_index"] = last_indexes.get("last_index")
+            params["last_disbursement_date"] = last_indexes.get("last_disbursement_date")
+        return await self._get("/schedules/schedule_b/", params)
+
     # -- Filings (cross-committee) ---------------------------------------
 
     async def search_filings(
@@ -189,18 +258,25 @@ class OpenFECClient:
 
     async def get_calendar_dates(
         self,
-        category: str | None = None,  # e.g. "reporting-dates", "election-dates"
-        calendar_year: int | None = None,
+        category: str | None = None,  # key into CALENDAR_CATEGORIES, e.g. "reporting-dates"
+        min_start_date: str | None = None,  # "YYYY-MM-DD"
+        max_start_date: str | None = None,  # "YYYY-MM-DD"
         per_page: int = 50,
         page: int = 1,
     ) -> dict[str, Any]:
-        return await self._get(
-            "/calendar-dates/",
-            {
-                "category": category,
-                "calendar_year": calendar_year,
-                "per_page": per_page,
-                "page": page,
-                "sort": "date",
-            },
-        )
+        params: dict[str, Any] = {
+            "min_start_date": min_start_date,
+            "max_start_date": max_start_date,
+            "per_page": per_page,
+            "page": page,
+            "sort": "start_date",
+        }
+        if category is not None:
+            category_ids = CALENDAR_CATEGORIES.get(category)
+            if category_ids is None:
+                raise OpenFECError(
+                    f"Unknown calendar category {category!r}. "
+                    f"Valid values: {', '.join(sorted(CALENDAR_CATEGORIES))}."
+                )
+            params["calendar_category_id"] = category_ids
+        return await self._get("/calendar-dates/", params)
