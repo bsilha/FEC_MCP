@@ -36,6 +36,14 @@ DEFAULT_RULEBOOKS_DIR = REPO_ROOT / "data" / "rulebooks"
 
 FEDERAL_JURISDICTION = "federal"
 
+# Bump whenever the sources/pages table schema changes shape (column
+# renames/additions, not just data changes -- those are already handled by
+# the manifest-based rebuild check). CREATE TABLE IF NOT EXISTS is a no-op
+# against an existing on-disk index.sqlite3 from a prior schema version, so
+# without this check a schema change would silently reuse old tables and
+# every query would fail with "no such column" once real data is queried.
+SCHEMA_VERSION = 2
+
 
 @dataclass
 class SearchHit:
@@ -131,6 +139,21 @@ class RulebookIndex:
     def _connect(self) -> sqlite3.Connection:
         self.index_dir.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
+
+        conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        if row is None or row[0] != SCHEMA_VERSION:
+            # Either a brand-new DB, or one built under an older schema version
+            # (e.g. before the jurisdiction column existed). Drop and let the
+            # tables below recreate from scratch, then fall through to a full
+            # rebuild (ensure_built sees an empty manifest table either way).
+            conn.execute("DROP TABLE IF EXISTS pages")
+            conn.execute("DROP TABLE IF EXISTS sources")
+            conn.execute("DROP TABLE IF EXISTS manifest")
+            conn.execute("DELETE FROM schema_version")
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            conn.commit()
+
         conn.execute("CREATE TABLE IF NOT EXISTS manifest (data TEXT NOT NULL)")
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS pages USING fts5("

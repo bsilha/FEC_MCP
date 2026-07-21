@@ -1,3 +1,4 @@
+import sqlite3
 import time
 from pathlib import Path
 
@@ -225,3 +226,41 @@ def test_list_sources_filtered_by_jurisdiction(tmp_path, monkeypatch):
 
     fed_only = idx.list_sources(jurisdiction="federal")
     assert [s.filename for s in fed_only] == ["candgui.pdf"]
+
+
+def test_migrates_cleanly_from_pre_jurisdiction_schema(tmp_path, monkeypatch):
+    """Regression test: an index.sqlite3 built by the pre-jurisdiction schema
+    (sources table with filename/pages columns, no jurisdiction) used to
+    crash every query with "no such column: source", because CREATE TABLE
+    IF NOT EXISTS is a no-op against an existing table with different
+    columns. A schema-version bump must detect this and drop+rebuild rather
+    than silently reusing the incompatible old tables."""
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    pdf_path = tmp_path / "candgui.pdf"
+    _write_dummy_pdf(pdf_path, ["individual contribution limit is $3,500"])
+
+    # Build an old-schema (pre-migration) cache by hand, exactly as the
+    # prior version of this module would have.
+    index_dir = tmp_path / ".index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(index_dir / "index.sqlite3")
+    conn.execute("CREATE TABLE manifest (data TEXT NOT NULL)")
+    conn.execute(
+        "CREATE VIRTUAL TABLE pages USING fts5(source, title, page UNINDEXED, text, tokenize='porter unicode61')"
+    )
+    conn.execute("CREATE TABLE sources (filename TEXT PRIMARY KEY, title TEXT, pages INTEGER)")
+    conn.execute("INSERT INTO sources VALUES ('candgui.pdf', 'stale', 1)")
+    conn.execute("INSERT INTO pages VALUES ('candgui.pdf', 'stale', 1, 'stale cached text')")
+    conn.execute("INSERT INTO manifest (data) VALUES ('[]')")
+    conn.commit()
+    conn.close()
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    sources = idx.list_sources()
+    assert len(sources) == 1
+    assert sources[0].jurisdiction == "federal"
+
+    hits = idx.search("individual contribution limit")
+    assert len(hits) == 1
+    assert hits[0].page == 1
