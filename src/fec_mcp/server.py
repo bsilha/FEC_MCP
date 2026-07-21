@@ -2,15 +2,19 @@
 
 Exposes two complementary tool families:
 
-1. Rulebook tools -- full-text search over official FEC PDF guides that the
-   user places in ``data/rulebooks/`` (campaign guides for candidates,
-   party committees, PACs, and the contribution-limits chart). This is the
-   authoritative source for compliance rules and dollar limits: answers are
-   grounded in quoted PDF pages with citations, not model recall.
+1. Rulebook tools -- full-text search over official campaign-finance PDF
+   guides. Federal (FEC) guides live directly in ``data/rulebooks/``
+   (campaign guides for candidates, party committees, PACs, and the
+   contribution-limits chart). State guides live in
+   ``data/rulebooks/states/{state_code}/`` (e.g. ``ca/``, ``ny/``) and are
+   entirely optional -- add them only for states you actually need. This is
+   the authoritative source for compliance rules and dollar limits: answers
+   are grounded in quoted PDF pages with citations, not model recall.
 
 2. OpenFEC tools -- live lookups against the public OpenFEC API
    (api.open.fec.gov) for real candidates, committees, filings, financial
-   totals, elections, and the reporting calendar.
+   totals, elections, and the reporting calendar. OpenFEC only covers
+   federal elections; it has no state-level data.
 
 Neither family gives legal advice; tool outputs should be treated as
 research aids and cited back to their source (PDF page or OpenFEC record).
@@ -29,23 +33,33 @@ from .rulebook_index import RulebookIndex
 INSTRUCTIONS = """\
 This server provides two kinds of tools:
 
-- search_rulebooks / list_rulebook_sources / get_rulebook_page: search the
-  official FEC campaign guide and contribution-limits PDFs the user has
-  placed in data/rulebooks/. Use these for ANY question about contribution
-  limits, disclaimer requirements, coordination rules, recordkeeping,
-  registration thresholds, or other compliance rules. Always cite the
-  source filename and page number from the results.
+- search_rulebooks / list_rulebook_sources / list_rulebook_jurisdictions /
+  get_rulebook_page: search official campaign-finance guide PDFs. Federal
+  (FEC) guides are always jurisdiction "federal"; state guides (if any are
+  loaded) use the state's two-letter code as jurisdiction, e.g. "ca". Call
+  list_rulebook_jurisdictions first if a question is about a specific
+  state, to see whether that state's rulebooks are actually loaded -- do
+  NOT assume a state is covered just because federal guides are. Use these
+  tools for ANY question about contribution limits, disclaimer
+  requirements, coordination rules, recordkeeping, registration
+  thresholds, or other compliance rules. Always cite the source and page
+  number from the results, and always state which jurisdiction (federal or
+  which state) an answer applies to.
 
 - search_candidates / get_candidate / get_candidate_totals /
   search_committees / get_committee / get_committee_filings /
   get_committee_totals / search_disbursements / search_filings /
   search_elections / get_reporting_calendar: live data from the OpenFEC API
   about real candidates, committees, filings, elections, and itemized
-  Schedule B disbursements (who a committee gave money to).
+  Schedule B disbursements (who a committee gave money to). This data is
+  FEDERAL ONLY -- OpenFEC has no state-level candidates/committees/filings.
 
 If data/rulebooks/ has no PDFs loaded yet, rulebook tools will say so --
 tell the user to add FEC campaign guide PDFs there rather than answering
-compliance questions from general knowledge.
+compliance questions from general knowledge. Likewise, if a question is
+about a state with no rulebooks loaded, say so explicitly rather than
+answering from general knowledge or applying federal rules to a state
+question.
 """
 
 mcp = FastMCP("fec-mcp", instructions=INSTRUCTIONS)
@@ -73,36 +87,75 @@ def _trim(item: dict[str, Any], keys: list[str]) -> dict[str, Any]:
 
 
 @mcp.tool()
-def list_rulebook_sources() -> dict[str, Any]:
-    """List the FEC rulebook PDFs currently loaded and searchable.
+def list_rulebook_jurisdictions() -> dict[str, Any]:
+    """List every jurisdiction with rulebook PDFs loaded, e.g. "federal" and
+    any state codes like "ca", "ny".
 
-    Returns each source's filename, title, and page count. If empty, no
-    PDFs have been added to data/rulebooks/ yet -- the user should add the
-    FEC's campaign guides (candidates, party committees, PACs) and the
-    contribution limits chart PDF there.
+    ALWAYS call this before answering a state-specific compliance question,
+    to check whether that state's rulebooks are actually loaded rather than
+    assuming coverage. Federal (FEC) coverage does not imply any state is
+    covered, and vice versa -- each is a fully separate set of documents.
     """
-    sources = _rulebook_index.list_sources()
+    jurisdictions = _rulebook_index.list_jurisdictions()
+    if not jurisdictions:
+        return {
+            "jurisdictions": [],
+            "message": "No rulebook PDFs are loaded at all yet. See list_rulebook_sources.",
+        }
+    return {"jurisdictions": jurisdictions}
+
+
+@mcp.tool()
+def list_rulebook_sources(jurisdiction: str | None = None) -> dict[str, Any]:
+    """List the rulebook PDFs currently loaded and searchable.
+
+    Returns each source's path, title, page count, and jurisdiction
+    ("federal" or a lowercase state code). If empty, no PDFs have been
+    added to data/rulebooks/ yet -- the user should add the FEC's campaign
+    guides (candidates, party committees, PACs) and the contribution
+    limits chart PDF there, and optionally state guides under
+    data/rulebooks/states/{state_code}/.
+
+    Args:
+        jurisdiction: Optional filter, "federal" or a lowercase two-letter
+            state code (e.g. "ca"). Omit to list everything.
+    """
+    sources = _rulebook_index.list_sources(jurisdiction=jurisdiction)
     if not sources:
         return {
             "sources": [],
             "message": (
-                "No rulebook PDFs are loaded. Add FEC campaign guide PDFs "
-                "(e.g. Campaign Guide for Congressional Candidates and "
-                "Committees, Campaign Guide for Political Party Committees, "
-                "Campaign Guide for Nonconnected Committees, and the "
-                "Contribution Limits chart) to data/rulebooks/ in this repo."
+                "No rulebook PDFs are loaded"
+                + (f" for jurisdiction '{jurisdiction}'" if jurisdiction else "")
+                + ". Add FEC campaign guide PDFs (e.g. Campaign Guide for "
+                "Congressional Candidates and Committees, Campaign Guide "
+                "for Political Party Committees, Campaign Guide for "
+                "Nonconnected Committees, and the Contribution Limits "
+                "chart) to data/rulebooks/, and optionally state guides "
+                "under data/rulebooks/states/{state_code}/, in this repo."
             ),
         }
     return {
         "sources": [
-            {"filename": s.filename, "title": s.title, "pages": s.pages} for s in sources
+            {
+                "source": s.filename,
+                "title": s.title,
+                "pages": s.pages,
+                "jurisdiction": s.jurisdiction,
+            }
+            for s in sources
         ]
     }
 
 
 @mcp.tool()
-def search_rulebooks(query: str, top_k: int = 8, source: str | None = None) -> dict[str, Any]:
-    """Full-text search the loaded FEC rulebook PDFs.
+def search_rulebooks(
+    query: str,
+    top_k: int = 8,
+    source: str | None = None,
+    jurisdiction: str | None = None,
+) -> dict[str, Any]:
+    """Full-text search the loaded rulebook PDFs (federal and/or state).
 
     Use this for any compliance question: contribution limits, who may
     contribute, disclaimer requirements, coordination rules, joint
@@ -110,24 +163,36 @@ def search_rulebooks(query: str, top_k: int = 8, source: str | None = None) -> d
     requirements, personal use of funds, foreign national/corporate
     contribution bans, etc.
 
+    IMPORTANT: if the question is about a specific state, pass that state's
+    lowercase two-letter code as `jurisdiction` (call
+    list_rulebook_jurisdictions first if unsure whether it's loaded) --
+    otherwise a federal-only search may return irrelevant federal rules for
+    what should be a state-law question, or vice versa. If the question
+    doesn't specify federal vs. state, search without a jurisdiction filter
+    and check each result's jurisdiction in the response before answering.
+
     Args:
         query: Search terms, e.g. "individual contribution limit candidate"
             or "disclaimer requirements".
         top_k: Max number of matching pages to return (default 8).
-        source: Optional filename (from list_rulebook_sources) to restrict
-            the search to a single PDF.
+        source: Optional exact source path (from list_rulebook_sources) to
+            restrict the search to a single PDF.
+        jurisdiction: Optional filter, "federal" or a lowercase two-letter
+            state code (e.g. "ca"). Omit to search all loaded jurisdictions.
 
-    Returns matching pages with a snippet (search terms marked with >>> <<<)
-    and the exact source filename + page number to cite. Always cite these
-    when answering; if no results, say so rather than guessing.
+    Returns matching pages with a snippet (search terms marked with >>> <<<),
+    which jurisdiction each match belongs to, and the exact source + page
+    number to cite. Always cite these and state the jurisdiction when
+    answering; if no results, say so rather than guessing.
     """
-    hits = _rulebook_index.search(query, top_k=top_k, source=source)
+    hits = _rulebook_index.search(query, top_k=top_k, source=source, jurisdiction=jurisdiction)
     if not hits:
-        sources = _rulebook_index.list_sources()
+        sources = _rulebook_index.list_sources(jurisdiction=jurisdiction)
         if not sources:
+            scope = f" for jurisdiction '{jurisdiction}'" if jurisdiction else ""
             return {
                 "results": [],
-                "message": "No rulebook PDFs are loaded yet. See list_rulebook_sources.",
+                "message": f"No rulebook PDFs are loaded{scope}. See list_rulebook_jurisdictions.",
             }
         return {"results": [], "message": "No matches found for this query."}
 
@@ -137,8 +202,9 @@ def search_rulebooks(query: str, top_k: int = 8, source: str | None = None) -> d
                 "source": h.source,
                 "title": h.title,
                 "page": h.page,
+                "jurisdiction": h.jurisdiction,
                 "snippet": h.snippet,
-                "citation": f"{h.title} ({h.source}), p.{h.page}",
+                "citation": f"{h.title} ({h.source}), p.{h.page} [{h.jurisdiction}]",
             }
             for h in hits
         ]
@@ -153,8 +219,8 @@ def get_rulebook_page(source: str, page: int) -> dict[str, Any]:
     read a specific page (e.g. a contribution-limits table page) in full.
 
     Args:
-        source: Exact filename as returned by list_rulebook_sources /
-            search_rulebooks.
+        source: Exact source path as returned by list_rulebook_sources /
+            search_rulebooks (e.g. "candgui.pdf" or "states/ca/limits.pdf").
         page: 1-indexed page number.
     """
     text = _rulebook_index.get_page_text(source, page)
@@ -402,19 +468,6 @@ async def search_disbursements(
     Use this to see who a committee gave money to and how much -- e.g.
     contributions/transfers to other committees, operating expenditures,
     refunds.
-
-    IMPORTANT -- always pass min_date (and usually max_date) unless the user
-    explicitly wants full history: high-volume committees (large-scale
-    fundraising conduits, national party committees, etc.) can have
-    hundreds of thousands of disbursements, and an unfiltered query against
-    them is slow enough to time out, and even when it succeeds returns a
-    `pagination.count` that OpenFEC computes as a rough approximation (see
-    `pagination.is_count_exact` -- when false, don't treat count/pages as
-    reliable). For "recent" disbursements with no date given, default to
-    something like the last 90 days rather than querying all history. A
-    `Network error ... ReadTimeout` result means the query was too broad --
-    narrow the date range (and/or add disbursement_purpose_category) and
-    retry rather than repeating the same unfiltered call.
 
     IMPORTANT -- to find how much a committee gave to *party* committees
     specifically: OpenFEC has no working server-side filter for the

@@ -1,14 +1,24 @@
-"""Full-text search over official FEC rulebook PDFs.
+"""Full-text search over official campaign-finance rulebook PDFs.
 
-Users drop the FEC's own campaign guides / contribution-limits charts (PDFs)
-into ``data/rulebooks/``. On first use this module extracts text page-by-page
-with pypdf and builds a SQLite FTS5 index cached in
-``data/rulebooks/.index/index.sqlite3``. The index is rebuilt automatically
-whenever the set of PDFs (or their size/mtime) changes.
+Users drop official guides (PDFs) into ``data/rulebooks/``:
+
+- Federal (FEC) guides go directly in ``data/rulebooks/*.pdf`` -- e.g. the
+  campaign guides for candidates, party committees, PACs, and the
+  contribution-limits chart.
+- State guides go in ``data/rulebooks/states/{state_code}/*.pdf``, where
+  ``state_code`` is the lowercase two-letter USPS code (e.g. ``ca``, ``ny``).
+  Each state's regulating agency differs (e.g. California's FPPC), and not
+  every state publishes a single consolidated guide the way the FEC does --
+  add whatever official PDFs are available for a given state.
+
+On first use this module extracts text page-by-page with pypdf and builds a
+SQLite FTS5 index cached in ``data/rulebooks/.index/index.sqlite3``. The
+index is rebuilt automatically whenever the set of PDFs (or their
+size/mtime) changes.
 
 This is the authoritative source for contribution limits and compliance
-rules in this server -- it quotes the FEC's own documents with page
-citations rather than relying on any hardcoded or model-recalled figures.
+rules in this server -- it quotes official documents with page citations
+rather than relying on any hardcoded or model-recalled figures.
 """
 
 from __future__ import annotations
@@ -24,6 +34,8 @@ from pypdf import PdfReader
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RULEBOOKS_DIR = REPO_ROOT / "data" / "rulebooks"
 
+FEDERAL_JURISDICTION = "federal"
+
 
 @dataclass
 class SearchHit:
@@ -32,6 +44,7 @@ class SearchHit:
     page: int
     snippet: str
     score: float
+    jurisdiction: str
 
 
 @dataclass
@@ -39,6 +52,7 @@ class SourceInfo:
     filename: str
     title: str
     pages: int
+    jurisdiction: str
 
 
 def _build_fts_query(query: str) -> str:
@@ -73,13 +87,25 @@ def _pdf_title(reader: PdfReader, fallback: str) -> str:
     return fallback
 
 
-def _manifest(pdf_paths: list[Path]) -> list[dict]:
+def _jurisdiction_for(rel_path: Path) -> str:
+    """Derive a source's jurisdiction from its path relative to rulebooks_dir.
+
+    ``states/{state_code}/whatever.pdf`` -> the lowercased state_code.
+    Anything else (i.e. directly under rulebooks_dir) -> "federal".
+    """
+    parts = rel_path.parts
+    if len(parts) >= 3 and parts[0] == "states":
+        return parts[1].lower()
+    return FEDERAL_JURISDICTION
+
+
+def _manifest(pdf_paths: list[tuple[Path, str]]) -> list[dict]:
     return sorted(
         (
-            {"filename": p.name, "size": p.stat().st_size, "mtime": p.stat().st_mtime}
-            for p in pdf_paths
+            {"source": rel, "size": p.stat().st_size, "mtime": p.stat().st_mtime}
+            for p, rel in pdf_paths
         ),
-        key=lambda d: d["filename"],
+        key=lambda d: d["source"],
     )
 
 
@@ -90,24 +116,31 @@ class RulebookIndex:
         self.db_path = self.index_dir / "index.sqlite3"
         self._conn: sqlite3.Connection | None = None
 
-    def _pdf_paths(self) -> list[Path]:
+    def _pdf_paths(self) -> list[tuple[Path, str]]:
+        """Return (absolute_path, relative_posix_path) for every PDF under
+        rulebooks_dir, searched recursively so states/{code}/*.pdf is picked
+        up alongside the top-level federal PDFs."""
         if not self.rulebooks_dir.exists():
             return []
-        return sorted(self.rulebooks_dir.glob("*.pdf"))
+        pairs = [
+            (p, p.relative_to(self.rulebooks_dir).as_posix())
+            for p in self.rulebooks_dir.rglob("*.pdf")
+        ]
+        return sorted(pairs, key=lambda pair: pair[1])
 
     def _connect(self) -> sqlite3.Connection:
         self.index_dir.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS manifest (data TEXT NOT NULL)"
-        )
+        conn.execute("CREATE TABLE IF NOT EXISTS manifest (data TEXT NOT NULL)")
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS pages USING fts5("
             "source, title, page UNINDEXED, text, tokenize='porter unicode61'"
             ")"
         )
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS sources (filename TEXT PRIMARY KEY, title TEXT, pages INTEGER)"
+            "CREATE TABLE IF NOT EXISTS sources ("
+            "source TEXT PRIMARY KEY, title TEXT, page_count INTEGER, jurisdiction TEXT"
+            ")"
         )
         return conn
 
@@ -130,27 +163,30 @@ class RulebookIndex:
         self._conn = conn
         return conn
 
-    def _rebuild(self, conn: sqlite3.Connection, pdf_paths: list[Path], manifest: list[dict]) -> None:
+    def _rebuild(
+        self, conn: sqlite3.Connection, pdf_paths: list[tuple[Path, str]], manifest: list[dict]
+    ) -> None:
         conn.execute("DELETE FROM pages")
         conn.execute("DELETE FROM sources")
         conn.execute("DELETE FROM manifest")
 
-        for pdf_path in pdf_paths:
+        for abs_path, rel_source in pdf_paths:
+            jurisdiction = _jurisdiction_for(Path(rel_source))
             try:
-                reader = PdfReader(str(pdf_path))
+                reader = PdfReader(str(abs_path))
             except Exception as exc:
                 # Skip unreadable/corrupt PDFs rather than failing the whole index.
                 conn.execute(
-                    "INSERT INTO sources (filename, title, pages) VALUES (?, ?, ?)",
-                    (pdf_path.name, f"[UNREADABLE: {exc}]", 0),
+                    "INSERT INTO sources (source, title, page_count, jurisdiction) VALUES (?, ?, ?, ?)",
+                    (rel_source, f"[UNREADABLE: {exc}]", 0, jurisdiction),
                 )
                 continue
 
-            title = _pdf_title(reader, fallback=pdf_path.stem.replace("_", " ").replace("-", " ").title())
+            title = _pdf_title(reader, fallback=abs_path.stem.replace("_", " ").replace("-", " ").title())
             num_pages = len(reader.pages)
             conn.execute(
-                "INSERT INTO sources (filename, title, pages) VALUES (?, ?, ?)",
-                (pdf_path.name, title, num_pages),
+                "INSERT INTO sources (source, title, page_count, jurisdiction) VALUES (?, ?, ?, ?)",
+                (rel_source, title, num_pages, jurisdiction),
             )
             for i, page in enumerate(reader.pages, start=1):
                 try:
@@ -160,33 +196,61 @@ class RulebookIndex:
                 if text.strip():
                     conn.execute(
                         "INSERT INTO pages (source, title, page, text) VALUES (?, ?, ?, ?)",
-                        (pdf_path.name, title, i, text),
+                        (rel_source, title, i, text),
                     )
 
         conn.execute("INSERT INTO manifest (data) VALUES (?)", (json.dumps(manifest),))
         conn.commit()
 
-    def list_sources(self) -> list[SourceInfo]:
+    def list_sources(self, jurisdiction: str | None = None) -> list[SourceInfo]:
         conn = self.ensure_built()
-        rows = conn.execute("SELECT filename, title, pages FROM sources ORDER BY filename").fetchall()
-        return [SourceInfo(filename=r[0], title=r[1], pages=r[2]) for r in rows]
+        sql = "SELECT source, title, page_count, jurisdiction FROM sources"
+        params: list = []
+        if jurisdiction:
+            sql += " WHERE jurisdiction = ?"
+            params.append(jurisdiction.lower())
+        sql += " ORDER BY jurisdiction, source"
+        rows = conn.execute(sql, params).fetchall()
+        return [SourceInfo(filename=r[0], title=r[1], pages=r[2], jurisdiction=r[3]) for r in rows]
 
-    def search(self, query: str, top_k: int = 8, source: str | None = None) -> list[SearchHit]:
+    def list_jurisdictions(self) -> list[dict]:
+        """List every jurisdiction with loaded sources (e.g. "federal", "ca"),
+        each with a source count -- lets callers discover which states (if
+        any) have rulebooks loaded without guessing state codes."""
+        conn = self.ensure_built()
+        rows = conn.execute(
+            "SELECT jurisdiction, COUNT(*) FROM sources GROUP BY jurisdiction ORDER BY jurisdiction"
+        ).fetchall()
+        return [{"jurisdiction": r[0], "source_count": r[1]} for r in rows]
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 8,
+        source: str | None = None,
+        jurisdiction: str | None = None,
+    ) -> list[SearchHit]:
         conn = self.ensure_built()
         fts_query = _build_fts_query(query)
         if not fts_query:
             return []
 
         sql = (
-            "SELECT source, title, page, "
+            "SELECT p.source, p.title, p.page, "
             "snippet(pages, 3, '>>>', '<<<', ' ... ', 40) AS snip, "
-            "bm25(pages) AS rank "
-            "FROM pages WHERE pages MATCH ?"
+            "bm25(pages) AS rank, "
+            "s.jurisdiction "
+            "FROM pages AS p "
+            "JOIN sources AS s ON s.source = p.source "
+            "WHERE pages MATCH ?"
         )
         params: list = [fts_query]
         if source:
-            sql += " AND source = ?"
+            sql += " AND p.source = ?"
             params.append(source)
+        if jurisdiction:
+            sql += " AND s.jurisdiction = ?"
+            params.append(jurisdiction.lower())
         sql += " ORDER BY rank LIMIT ?"
         params.append(top_k)
 
@@ -196,7 +260,7 @@ class RulebookIndex:
             return []
 
         return [
-            SearchHit(source=r[0], title=r[1], page=r[2], snippet=r[3], score=r[4])
+            SearchHit(source=r[0], title=r[1], page=r[2], snippet=r[3], score=r[4], jurisdiction=r[5])
             for r in rows
         ]
 

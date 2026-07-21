@@ -9,6 +9,7 @@ async def test_list_tools_registers_all_expected_tools():
     tools = await server.mcp.list_tools()
     names = {t.name for t in tools}
     assert names == {
+        "list_rulebook_jurisdictions",
         "list_rulebook_sources",
         "search_rulebooks",
         "get_rulebook_page",
@@ -31,6 +32,60 @@ def test_list_rulebook_sources_empty(tmp_path, monkeypatch):
     result = server.list_rulebook_sources()
     assert result["sources"] == []
     assert "No rulebook PDFs" in result["message"]
+
+
+def test_list_rulebook_jurisdictions_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_rulebook_index", server.RulebookIndex(rulebooks_dir=tmp_path))
+    result = server.list_rulebook_jurisdictions()
+    assert result["jurisdictions"] == []
+    assert "No rulebook PDFs" in result["message"]
+
+
+def test_list_rulebook_jurisdictions_and_state_filtering(tmp_path, monkeypatch):
+    from fec_mcp.rulebook_index import RulebookIndex
+
+    fed = tmp_path / "candgui.pdf"
+    ca = tmp_path / "states" / "ca" / "limits.pdf"
+    fed.parent.mkdir(parents=True, exist_ok=True)
+    ca.parent.mkdir(parents=True, exist_ok=True)
+    fed.write_bytes(b"%PDF-fake")
+    ca.write_bytes(b"%PDF-fake")
+
+    class FakePage:
+        def __init__(self, text):
+            self._text = text
+
+        def extract_text(self):
+            return self._text
+
+    class FakeReader:
+        registry = {
+            str(fed): ["federal contribution limit text"],
+            str(ca): ["california contribution limit text"],
+        }
+
+        def __init__(self, path):
+            self.pages = [FakePage(t) for t in self.registry[path]]
+            self.metadata = None
+
+    import fec_mcp.rulebook_index as ri
+
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+    monkeypatch.setattr(server, "_rulebook_index", RulebookIndex(rulebooks_dir=tmp_path))
+
+    jurisdictions = server.list_rulebook_jurisdictions()
+    assert {j["jurisdiction"] for j in jurisdictions["jurisdictions"]} == {"federal", "ca"}
+
+    sources_ca = server.list_rulebook_sources(jurisdiction="ca")
+    assert [s["source"] for s in sources_ca["sources"]] == ["states/ca/limits.pdf"]
+
+    search_ca = server.search_rulebooks("contribution limit", jurisdiction="ca")
+    assert len(search_ca["results"]) == 1
+    assert search_ca["results"][0]["jurisdiction"] == "ca"
+    assert search_ca["results"][0]["source"] == "states/ca/limits.pdf"
+
+    search_all = server.search_rulebooks("contribution limit")
+    assert len(search_all["results"]) == 2
 
 
 async def test_search_candidates_trims_fields(monkeypatch):

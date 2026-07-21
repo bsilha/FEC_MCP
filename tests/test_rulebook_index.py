@@ -25,6 +25,7 @@ class FakeReader:
 
 
 def _write_dummy_pdf(path: Path, page_texts: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"%PDF-fake-for-tests")
     FakeReader.registry[str(path)] = page_texts
 
@@ -52,11 +53,13 @@ def test_index_builds_and_finds_text(tmp_path, monkeypatch):
     assert len(sources) == 1
     assert sources[0].filename == "sample_guide.pdf"
     assert sources[0].pages == 2
+    assert sources[0].jurisdiction == "federal"
 
     hits = idx.search("individual contribution limit")
     assert len(hits) == 1
     assert hits[0].source == "sample_guide.pdf"
     assert hits[0].page == 1
+    assert hits[0].jurisdiction == "federal"
 
     hits2 = idx.search("periodic reports")
     assert hits2[0].page == 2
@@ -154,3 +157,71 @@ def test_source_filter(tmp_path, monkeypatch):
     hits = idx.search("disclaimer rules", source="a.pdf")
     assert len(hits) == 1
     assert hits[0].source == "a.pdf"
+
+
+def test_state_pdf_gets_state_jurisdiction(tmp_path, monkeypatch):
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    fed = tmp_path / "candgui.pdf"
+    ca = tmp_path / "states" / "ca" / "limits.pdf"
+    _write_dummy_pdf(fed, ["federal contribution limit rules"])
+    _write_dummy_pdf(ca, ["california contribution limit rules"])
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    sources = {s.filename: s for s in idx.list_sources()}
+
+    assert sources["candgui.pdf"].jurisdiction == "federal"
+    assert sources["states/ca/limits.pdf"].jurisdiction == "ca"
+
+
+def test_list_jurisdictions(tmp_path, monkeypatch):
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    _write_dummy_pdf(tmp_path / "candgui.pdf", ["federal text"])
+    _write_dummy_pdf(tmp_path / "states" / "ca" / "a.pdf", ["ca text one"])
+    _write_dummy_pdf(tmp_path / "states" / "ca" / "b.pdf", ["ca text two"])
+    _write_dummy_pdf(tmp_path / "states" / "ny" / "a.pdf", ["ny text"])
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    jurisdictions = {j["jurisdiction"]: j["source_count"] for j in idx.list_jurisdictions()}
+
+    assert jurisdictions == {"federal": 1, "ca": 2, "ny": 1}
+
+
+def test_search_filtered_by_jurisdiction(tmp_path, monkeypatch):
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    _write_dummy_pdf(tmp_path / "candgui.pdf", ["contribution limit is $3500 federally"])
+    _write_dummy_pdf(tmp_path / "states" / "ca" / "limits.pdf", ["contribution limit is different in california"])
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+
+    fed_hits = idx.search("contribution limit", jurisdiction="federal")
+    assert len(fed_hits) == 1
+    assert fed_hits[0].source == "candgui.pdf"
+
+    ca_hits = idx.search("contribution limit", jurisdiction="ca")
+    assert len(ca_hits) == 1
+    assert ca_hits[0].source == "states/ca/limits.pdf"
+
+    # Case-insensitive jurisdiction filter.
+    ca_hits_upper = idx.search("contribution limit", jurisdiction="CA")
+    assert len(ca_hits_upper) == 1
+
+    all_hits = idx.search("contribution limit")
+    assert len(all_hits) == 2
+
+
+def test_list_sources_filtered_by_jurisdiction(tmp_path, monkeypatch):
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    _write_dummy_pdf(tmp_path / "candgui.pdf", ["federal text"])
+    _write_dummy_pdf(tmp_path / "states" / "ca" / "a.pdf", ["ca text"])
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+
+    ca_only = idx.list_sources(jurisdiction="ca")
+    assert [s.filename for s in ca_only] == ["states/ca/a.pdf"]
+
+    fed_only = idx.list_sources(jurisdiction="federal")
+    assert [s.filename for s in fed_only] == ["candgui.pdf"]
