@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,6 +124,13 @@ class RulebookIndex:
         self.index_dir = self.rulebooks_dir / ".index"
         self.db_path = self.index_dir / "index.sqlite3"
         self._conn: sqlite3.Connection | None = None
+        # A RulebookIndex instance (e.g. the module-level singleton in
+        # server.py) can be called from multiple OS threads -- Streamlit,
+        # for one, runs each script rerun on a different thread. sqlite3
+        # connections are thread-bound by default, so check_same_thread is
+        # disabled below and this lock serializes actual query execution to
+        # keep that safe.
+        self._lock = threading.Lock()
 
     def _pdf_paths(self) -> list[tuple[Path, str]]:
         """Return (absolute_path, relative_posix_path) for every PDF under
@@ -138,7 +146,7 @@ class RulebookIndex:
 
     def _connect(self) -> sqlite3.Connection:
         self.index_dir.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
 
         conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
@@ -226,24 +234,26 @@ class RulebookIndex:
         conn.commit()
 
     def list_sources(self, jurisdiction: str | None = None) -> list[SourceInfo]:
-        conn = self.ensure_built()
-        sql = "SELECT source, title, page_count, jurisdiction FROM sources"
-        params: list = []
-        if jurisdiction:
-            sql += " WHERE jurisdiction = ?"
-            params.append(jurisdiction.lower())
-        sql += " ORDER BY jurisdiction, source"
-        rows = conn.execute(sql, params).fetchall()
+        with self._lock:
+            conn = self.ensure_built()
+            sql = "SELECT source, title, page_count, jurisdiction FROM sources"
+            params: list = []
+            if jurisdiction:
+                sql += " WHERE jurisdiction = ?"
+                params.append(jurisdiction.lower())
+            sql += " ORDER BY jurisdiction, source"
+            rows = conn.execute(sql, params).fetchall()
         return [SourceInfo(filename=r[0], title=r[1], pages=r[2], jurisdiction=r[3]) for r in rows]
 
     def list_jurisdictions(self) -> list[dict]:
         """List every jurisdiction with loaded sources (e.g. "federal", "ca"),
         each with a source count -- lets callers discover which states (if
         any) have rulebooks loaded without guessing state codes."""
-        conn = self.ensure_built()
-        rows = conn.execute(
-            "SELECT jurisdiction, COUNT(*) FROM sources GROUP BY jurisdiction ORDER BY jurisdiction"
-        ).fetchall()
+        with self._lock:
+            conn = self.ensure_built()
+            rows = conn.execute(
+                "SELECT jurisdiction, COUNT(*) FROM sources GROUP BY jurisdiction ORDER BY jurisdiction"
+            ).fetchall()
         return [{"jurisdiction": r[0], "source_count": r[1]} for r in rows]
 
     def search(
@@ -253,7 +263,6 @@ class RulebookIndex:
         source: str | None = None,
         jurisdiction: str | None = None,
     ) -> list[SearchHit]:
-        conn = self.ensure_built()
         fts_query = _build_fts_query(query)
         if not fts_query:
             return []
@@ -277,10 +286,12 @@ class RulebookIndex:
         sql += " ORDER BY rank LIMIT ?"
         params.append(top_k)
 
-        try:
-            rows = conn.execute(sql, params).fetchall()
-        except sqlite3.OperationalError:
-            return []
+        with self._lock:
+            conn = self.ensure_built()
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return []
 
         return [
             SearchHit(source=r[0], title=r[1], page=r[2], snippet=r[3], score=r[4], jurisdiction=r[5])
@@ -288,8 +299,9 @@ class RulebookIndex:
         ]
 
     def get_page_text(self, source: str, page: int) -> str | None:
-        conn = self.ensure_built()
-        row = conn.execute(
-            "SELECT text FROM pages WHERE source = ? AND page = ?", (source, page)
-        ).fetchone()
+        with self._lock:
+            conn = self.ensure_built()
+            row = conn.execute(
+                "SELECT text FROM pages WHERE source = ? AND page = ?", (source, page)
+            ).fetchone()
         return row[0] if row else None

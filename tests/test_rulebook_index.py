@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -226,6 +227,43 @@ def test_list_sources_filtered_by_jurisdiction(tmp_path, monkeypatch):
 
     fed_only = idx.list_sources(jurisdiction="federal")
     assert [s.filename for s in fed_only] == ["candgui.pdf"]
+
+
+def test_queries_from_multiple_threads_do_not_raise(tmp_path, monkeypatch):
+    """Regression test: a single RulebookIndex (e.g. the module-level
+    singleton in server.py) can be queried from multiple OS threads -- e.g.
+    Streamlit runs each script rerun on a different thread. sqlite3
+    connections are thread-bound by default, so building the connection in
+    one thread and querying it from another used to raise
+    sqlite3.ProgrammingError: 'SQLite objects created in a thread can only
+    be used in that same thread.'"""
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    pdf_path = tmp_path / "guide.pdf"
+    _write_dummy_pdf(pdf_path, ["individual contribution limit is $3,500"])
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    # Build the index (and its connection) on the current thread.
+    assert len(idx.list_sources()) == 1
+
+    errors: list[BaseException] = []
+
+    def worker():
+        try:
+            for _ in range(5):
+                idx.list_jurisdictions()
+                idx.search("individual contribution limit")
+                idx.get_page_text("guide.pdf", 1)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
 
 
 def test_migrates_cleanly_from_pre_jurisdiction_schema(tmp_path, monkeypatch):
