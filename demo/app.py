@@ -383,7 +383,8 @@ def search_elections(
 @beta_tool
 def get_reporting_calendar(
     category: str | None = None,
-    calendar_year: int | None = None,
+    min_start_date: str | None = None,
+    max_start_date: str | None = None,
     per_page: int = 50,
     page: int = 1,
 ) -> str:
@@ -392,7 +393,9 @@ def get_reporting_calendar(
     Args:
         category: Optional category, e.g. "reporting-dates", "quarterly",
             "monthly", "election-dates".
-        calendar_year: Optional calendar year filter, e.g. 2026.
+        min_start_date: Optional lower bound, "YYYY-MM-DD". There is no
+            year-only filter -- use this plus max_start_date instead.
+        max_start_date: Optional upper bound, "YYYY-MM-DD".
         per_page: Results per page (max 100).
         page: Page number.
     """
@@ -400,7 +403,8 @@ def get_reporting_calendar(
         _run_async(
             server.get_reporting_calendar,
             category=category,
-            calendar_year=calendar_year,
+            min_start_date=min_start_date,
+            max_start_date=max_start_date,
             per_page=per_page,
             page=page,
         )
