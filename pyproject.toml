@@ -15,6 +15,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+demo = [
+    "streamlit>=1.38",
+    "anthropic>=0.40",
+]
 
 [project.scripts]
 fec-mcp = "fec_mcp.server:main"

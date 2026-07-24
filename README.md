@@ -130,6 +130,12 @@ fec-mcp
   OpenFEC data (candidates, committees, filings, disbursements) is federal
   only; there is no state-level equivalent here.
 
+## Demo
+
+`demo/` has a one-page Streamlit chat app over these same tools -- useful for
+showing the project to someone without walking them through MCP client setup.
+See `demo/README.md`.
+
 ## Development
 
 ```bash
