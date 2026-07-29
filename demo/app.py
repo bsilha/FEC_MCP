@@ -43,6 +43,18 @@ def _json(result: dict[str, Any]) -> str:
     return json.dumps(result, default=str)
 
 
+def _md(text: str) -> str:
+    """Escape literal '$' before handing text to st.markdown.
+
+    st.markdown renders anything between a pair of '$' as LaTeX math, and
+    campaign-finance answers are full of dollar amounts (e.g. "$3,500 ...
+    $5,000") -- unescaped, everything between the first and second '$' in a
+    message silently renders as a math expression in serif italic type
+    instead of plain text.
+    """
+    return text.replace("$", "\\$")
+
+
 # ---------------------------------------------------------------------------
 # Tool wrappers -- thin @beta_tool shims around fec_mcp.server's real tool
 # functions, so this demo and the MCP server share one implementation.
@@ -501,16 +513,16 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
 
     for turn in st.session_state.messages:
         with st.chat_message(turn["role"]):
-            st.markdown(turn["content"])
+            st.markdown(_md(turn["content"]))
             for call in turn.get("trace", []):
-                st.caption(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})")
+                st.caption(_md(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})"))
 
     prompt = st.chat_input("Ask a federal (or loaded-state) campaign finance question...")
     if not prompt:
         return
 
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(_md(prompt))
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     client = Anthropic(api_key=api_key or None)
@@ -524,8 +536,8 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
                 st.error(f"Error: {exc}")
                 return
         for call in result["trace"]:
-            st.caption(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})")
-        st.markdown(result["text"])
+            st.caption(_md(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})"))
+        st.markdown(_md(result["text"]))
         if result["stop_reason"] == "pause_turn":
             st.warning("Response paused mid-turn (hit the server-tool iteration limit) -- answer may be incomplete.")
 
