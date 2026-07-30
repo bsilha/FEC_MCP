@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 import streamlit as st
@@ -493,10 +494,18 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     with st.sidebar:
         st.subheader("Setup")
         api_key = st.text_input(
-            "ANTHROPIC_API_KEY",
+            "Your Anthropic API key",
             type="password",
-            help="Falls back to the ANTHROPIC_API_KEY environment variable if left blank.",
+            help=(
+                "Get one at console.anthropic.com. Used only for your own "
+                "session -- not stored or shared with other visitors. Falls "
+                "back to the server's ANTHROPIC_API_KEY environment "
+                "variable if left blank (unset on this deployment)."
+            ),
         )
+        has_key = bool(api_key) or bool(os.environ.get("ANTHROPIC_API_KEY"))
+        if not has_key:
+            st.info("Paste your Anthropic API key above to start chatting.")
         jurisdictions = server.list_rulebook_jurisdictions()
         st.write("**Rulebook jurisdictions loaded:**")
         if jurisdictions.get("jurisdictions"):
@@ -519,6 +528,13 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
 
     prompt = st.chat_input("Ask a federal (or loaded-state) campaign finance question...")
     if not prompt:
+        return
+
+    if not has_key:
+        with st.chat_message("user"):
+            st.markdown(_md(prompt))
+        with st.chat_message("assistant"):
+            st.warning("Add your Anthropic API key in the sidebar first, then ask again.")
         return
 
     with st.chat_message("user"):

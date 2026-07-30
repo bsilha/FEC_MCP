@@ -51,24 +51,26 @@ host it persistently at a stable URL instead:
    `demo/app.py`. Community Cloud installs from `requirements.txt` at the
    repo root (already set up to install `fec-mcp` itself plus the `demo`
    extra) -- no separate build config needed.
-3. In the app's **Settings -> Secrets**, add:
+3. In the app's **Settings -> Secrets**, add only:
    ```toml
-   ANTHROPIC_API_KEY = "your_key_here"
    FEC_API_KEY = "your_key_here"
    ```
-   Community Cloud exposes these as real environment variables to the app,
-   so no code changes are needed -- same env vars the app already reads
-   locally.
+   Deliberately **don't** add `ANTHROPIC_API_KEY` here -- leaving it unset
+   means each visitor has to paste their own key into the sidebar before
+   they can chat (their key is used for their session only, never stored
+   or shared with other visitors), instead of everyone silently spending
+   against one shared key you're on the hook for. Community Cloud exposes
+   secrets as real environment variables, so `FEC_API_KEY` needs no code
+   changes -- same env var the app already reads locally.
 4. Deploy. First load will be slower than usual while the rulebook search
    index builds from the PDFs in `data/rulebooks/`; it's cached after that
    until the app restarts.
 
-**Before sharing the URL:** this puts a real Anthropic API key behind a
-page anyone with the link can use, with no rate limiting or per-user cost
-tracking -- every message costs real API spend. Community Cloud supports
-restricting an app to specific viewer emails (app settings -> **Sharing**);
-turn that on before handing out the link, or budget for open access
-accordingly.
+Since no Anthropic key lives on the server, there's no per-message cost
+exposure from sharing the URL widely -- each visitor pays for their own
+usage with their own key. Community Cloud can still restrict an app to
+specific viewer emails (app settings -> **Sharing**) if you'd rather limit
+who can even load the page.
 
 ## What it's for
 
