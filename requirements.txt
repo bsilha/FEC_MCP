@@ -1,0 +1,6 @@
+# For Streamlit Community Cloud, which installs from this file (not
+# pyproject.toml directly) and runs demo/app.py as the entrypoint.
+# Installs fec-mcp itself (editable) plus the "demo" extra (streamlit,
+# anthropic) so demo/app.py's `from fec_mcp import server` resolves and
+# every real tool implementation it calls is available.
+-e .[demo]
