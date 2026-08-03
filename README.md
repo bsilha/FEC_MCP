@@ -37,11 +37,19 @@ Place the official FEC PDF guides in `data/rulebooks/`, for example:
 - The FEC's Campaign Guide for Political Party Committees
 - The FEC's Campaign Guide for Nonconnected Committees (PACs)
 - The current Contribution Limits chart
+- FEC form instructions (Form 1 Statement of Organization, Form 2 Statement
+  of Candidacy, Form 3/3X/3P finance reports, Form 24/48 independent
+  expenditure and electioneering communication notices, etc.) -- useful for
+  "how do I fill out / what does this form require" questions rather than
+  general compliance rules
 
 These are published on [fec.gov](https://www.fec.gov) under its Campaign
-Guides / Contribution Limits resources; grab the current versions from
-there (this repo does not bundle download links since they change over
-time -- verify you have the current cycle's documents).
+Guides / Contribution Limits / Forms resources; grab the current versions
+from there (this repo does not bundle download links since they change
+over time -- verify you have the current cycle's documents). Group related
+PDFs in a subfolder if you like (e.g. `data/rulebooks/fec_form_instructions/`)
+-- any subfolder that isn't `states/` is still indexed as jurisdiction
+"federal".
 
 Any PDF you drop in `data/rulebooks/` is picked up automatically -- the
 server builds a search index (cached in `data/rulebooks/.index/`) the first
