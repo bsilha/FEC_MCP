@@ -67,10 +67,30 @@ class OpenFECClient:
             ) from exc
 
         if resp.status_code == 429:
-            raise OpenFECError(
-                "OpenFEC API rate limit exceeded. If using DEMO_KEY, get a free "
-                "personal key at https://api.data.gov/signup/ and set FEC_API_KEY."
-            )
+            # Say definitively which case applies instead of a conditional
+            # "if using DEMO_KEY" -- that phrasing left it to the caller (and
+            # the person reading the answer) to separately go verify which
+            # key was actually in play, which in practice meant a rate limit
+            # on /legal/search/ specifically got misread as "this endpoint
+            # must have its own stricter limit" when the real cause was
+            # FEC_API_KEY not being set in whatever process made the call.
+            if self._api_key == "DEMO_KEY":
+                key_hint = (
+                    "This request used the shared DEMO_KEY, which is heavily "
+                    "rate-limited by api.data.gov -- get a free personal key at "
+                    "https://api.data.gov/signup/ and set FEC_API_KEY in the "
+                    "environment that's actually running this process (a personal "
+                    "key set elsewhere, e.g. a different terminal or client, "
+                    "doesn't carry over)."
+                )
+            else:
+                key_hint = (
+                    "A personal FEC_API_KEY is set for this request, so this is "
+                    f"either that key's hourly quota being exhausted, or {path} "
+                    "specifically has a separate/stricter rate limit than the "
+                    "rest of the OpenFEC API. Wait a bit and retry."
+                )
+            raise OpenFECError(f"OpenFEC API rate limit exceeded ({path}). {key_hint}")
         if resp.status_code == 403:
             raise OpenFECError(
                 "OpenFEC API rejected the request (403) -- check that FEC_API_KEY is valid."

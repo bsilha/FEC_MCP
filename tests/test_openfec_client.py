@@ -35,10 +35,27 @@ async def test_search_candidates_success(client):
     assert "office" not in kwargs["params"]  # None values dropped
 
 
-async def test_rate_limit_raises_openfec_error(client):
+async def test_rate_limit_with_custom_key_says_so(client):
+    """Regression test: the 429 message used to hedge with "if using
+    DEMO_KEY", leaving it to the reader to separately figure out which case
+    actually applied. It must now say definitively whether this request
+    used DEMO_KEY or a personal key -- this client fixture uses a personal
+    key ("TEST_KEY"), so the message must not tell the user to go sign up
+    for one."""
     client._client.get = AsyncMock(return_value=FakeResponse(429))
-    with pytest.raises(OpenFECError, match="rate limit"):
+    with pytest.raises(OpenFECError, match="rate limit") as exc_info:
         await client.search_committees(name="Acme PAC")
+    assert "DEMO_KEY" not in str(exc_info.value)
+    assert "personal FEC_API_KEY is set" in str(exc_info.value)
+
+
+async def test_rate_limit_with_demo_key_says_so():
+    demo_client = OpenFECClient(api_key="DEMO_KEY")
+    demo_client._client.get = AsyncMock(return_value=FakeResponse(429))
+    with pytest.raises(OpenFECError, match="rate limit") as exc_info:
+        await demo_client.search_committees(name="Acme PAC")
+    assert "shared DEMO_KEY" in str(exc_info.value)
+    assert "api.data.gov/signup" in str(exc_info.value)
 
 
 async def test_forbidden_raises_openfec_error(client):
