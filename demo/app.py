@@ -439,7 +439,9 @@ def search_advisory_opinions(
     """Search FEC Advisory Opinions -- rulings on specific factual scenarios
     (e.g. "can a campaign accept cryptocurrency donations"), federal only.
     Use this for a specific edge-case scenario; use search_rulebooks instead
-    for general compliance rules.
+    for general compliance rules. Any document link/URL field returned is a
+    path relative to https://www.fec.gov, not a complete URL -- always
+    prepend that origin when presenting a link.
 
     Args:
         q: Free-text search, e.g. "cryptocurrency donations".
@@ -470,7 +472,11 @@ def search_advisory_opinions(
 
 @beta_tool
 def get_advisory_opinion(ao_no: str) -> str:
-    """Get one FEC Advisory Opinion's full document by its AO number (federal only).
+    """Get one FEC Advisory Opinion's full document record by its AO number
+    (federal only). Returns every document filed under this AO number --
+    request, drafts, final opinion, vote record, comments -- not just the
+    final opinion, so check each document's type/category before treating
+    its text as the Commission's actual holding.
 
     Args:
         ao_no: AO number as returned by search_advisory_opinions, e.g. "2014-12".

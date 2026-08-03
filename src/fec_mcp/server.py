@@ -667,7 +667,11 @@ async def search_advisory_opinions(
     the exact fields on each returned advisory-opinion object aren't a
     stable contract -- read whatever keys are actually present (typically
     includes an AO number, name/subject, status, and document links) rather
-    than assuming specific field names.
+    than assuming specific field names. Any document link/URL field is a
+    path relative to https://www.fec.gov (e.g. "/files/legal/aos/2014-02/
+    2014-02.pdf"), not a complete URL -- always prepend that origin when
+    presenting a link, rather than showing the bare path or guessing at a
+    full URL.
 
     Args:
         q: Free-text search, e.g. "cryptocurrency donations".
@@ -702,7 +706,15 @@ async def search_advisory_opinions(
 
 @mcp.tool()
 async def get_advisory_opinion(ao_no: str) -> dict[str, Any]:
-    """Get one FEC Advisory Opinion's full document by its AO number (federal only).
+    """Get one FEC Advisory Opinion's full document record by its AO number (federal only).
+
+    Returns every document filed under this AO number -- the request,
+    draft opinions, the final opinion, the vote record, and any outside
+    comments -- not just the final opinion, so check each document's own
+    type/category field before treating its text as the Commission's
+    actual holding (a draft or a comment is not the final ruling). Any
+    document link/URL field is a path relative to https://www.fec.gov, not
+    a complete URL -- always prepend that origin when presenting a link.
 
     Args:
         ao_no: AO number as returned by search_advisory_opinions, e.g. "2014-12".
