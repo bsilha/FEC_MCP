@@ -288,3 +288,49 @@ class OpenFECClient:
                 )
             params["calendar_category_id"] = category_ids
         return await self._get("/calendar-dates/", params)
+
+    # -- Legal: advisory opinions ------------------------------------------
+    #
+    # /legal/search/ is OpenFEC's single search endpoint across every legal
+    # document type (advisory opinions, MURs, statutes, regulations, etc.),
+    # backed by Elasticsearch/Opensearch, not a Postgres table -- so unlike
+    # the endpoints above, response objects are search hits, not fixed
+    # database rows, and their exact field set isn't part of any stable
+    # public schema. These methods pin type="advisory_opinions" and pass the
+    # raw hit dicts straight through rather than reshaping them, since
+    # guessing at field names here would risk silently dropping or
+    # mislabeling real data -- callers should read whatever keys are present
+    # in each hit.
+
+    async def search_advisory_opinions(
+        self,
+        q: str | None = None,
+        ao_no: str | None = None,
+        ao_year: str | None = None,
+        ao_name: str | None = None,
+        ao_status: str | None = None,
+        ao_requestor: str | None = None,
+        ao_commenter: str | None = None,
+        ao_representative: str | None = None,
+        from_hit: int = 0,
+        hits_returned: int = 20,
+    ) -> dict[str, Any]:
+        return await self._get(
+            "/legal/search/",
+            {
+                "q": q,
+                "type": "advisory_opinions",
+                "ao_no": ao_no,
+                "ao_year": ao_year,
+                "ao_name": ao_name,
+                "ao_status": ao_status,
+                "ao_requestor": ao_requestor,
+                "ao_commenter": ao_commenter,
+                "ao_representative": ao_representative,
+                "from_hit": from_hit,
+                "hits_returned": min(hits_returned, 200),
+            },
+        )
+
+    async def get_advisory_opinion(self, ao_no: str) -> dict[str, Any]:
+        return await self._get(f"/legal/docs/advisory_opinions/{ao_no}")

@@ -24,6 +24,8 @@ async def test_list_tools_registers_all_expected_tools():
         "search_filings",
         "search_elections",
         "get_reporting_calendar",
+        "search_advisory_opinions",
+        "get_advisory_opinion",
     }
 
 
@@ -140,4 +142,82 @@ async def test_search_candidates_surfaces_openfec_error(monkeypatch):
     monkeypatch.setattr(server, "_client", fake_get_client)
 
     result = await server.search_candidates(name="Jane Doe")
+    assert result == {"error": "boom"}
+
+
+async def test_search_advisory_opinions_passes_through_hits(monkeypatch):
+    fake_client = AsyncMock()
+    fake_client.search_advisory_opinions = AsyncMock(
+        return_value={
+            "advisory_opinions": [{"no": "2014-12", "name": "Bitcoin donations", "status": "Final"}],
+            "total_advisory_opinions": 1,
+        }
+    )
+
+    async def fake_get_client():
+        return fake_client
+
+    monkeypatch.setattr(server, "_client", fake_get_client)
+
+    result = await server.search_advisory_opinions(q="bitcoin")
+    assert result["advisory_opinions"] == [
+        {"no": "2014-12", "name": "Bitcoin donations", "status": "Final"}
+    ]
+    assert result["total_advisory_opinions"] == 1
+    fake_client.search_advisory_opinions.assert_awaited_once_with(
+        q="bitcoin",
+        ao_no=None,
+        ao_year=None,
+        ao_name=None,
+        ao_status=None,
+        ao_requestor=None,
+        ao_commenter=None,
+        ao_representative=None,
+        hits_returned=20,
+    )
+
+
+async def test_search_advisory_opinions_surfaces_openfec_error(monkeypatch):
+    from fec_mcp.openfec_client import OpenFECError
+
+    fake_client = AsyncMock()
+    fake_client.search_advisory_opinions = AsyncMock(side_effect=OpenFECError("boom"))
+
+    async def fake_get_client():
+        return fake_client
+
+    monkeypatch.setattr(server, "_client", fake_get_client)
+
+    result = await server.search_advisory_opinions(q="bitcoin")
+    assert result == {"error": "boom"}
+
+
+async def test_get_advisory_opinion_passes_through_docs(monkeypatch):
+    fake_client = AsyncMock()
+    fake_client.get_advisory_opinion = AsyncMock(
+        return_value={"docs": [{"no": "2014-12", "name": "Bitcoin donations"}]}
+    )
+
+    async def fake_get_client():
+        return fake_client
+
+    monkeypatch.setattr(server, "_client", fake_get_client)
+
+    result = await server.get_advisory_opinion("2014-12")
+    assert result == {"docs": [{"no": "2014-12", "name": "Bitcoin donations"}]}
+    fake_client.get_advisory_opinion.assert_awaited_once_with("2014-12")
+
+
+async def test_get_advisory_opinion_surfaces_openfec_error(monkeypatch):
+    from fec_mcp.openfec_client import OpenFECError
+
+    fake_client = AsyncMock()
+    fake_client.get_advisory_opinion = AsyncMock(side_effect=OpenFECError("boom"))
+
+    async def fake_get_client():
+        return fake_client
+
+    monkeypatch.setattr(server, "_client", fake_get_client)
+
+    result = await server.get_advisory_opinion("2014-12")
     assert result == {"error": "boom"}

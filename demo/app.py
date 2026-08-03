@@ -424,6 +424,60 @@ def get_reporting_calendar(
     )
 
 
+@beta_tool
+def search_advisory_opinions(
+    q: str | None = None,
+    ao_no: str | None = None,
+    ao_year: str | None = None,
+    ao_name: str | None = None,
+    ao_status: str | None = None,
+    ao_requestor: str | None = None,
+    ao_commenter: str | None = None,
+    ao_representative: str | None = None,
+    hits_returned: int = 20,
+) -> str:
+    """Search FEC Advisory Opinions -- rulings on specific factual scenarios
+    (e.g. "can a campaign accept cryptocurrency donations"), federal only.
+    Use this for a specific edge-case scenario; use search_rulebooks instead
+    for general compliance rules.
+
+    Args:
+        q: Free-text search, e.g. "cryptocurrency donations".
+        ao_no: Exact AO number, e.g. "2014-12".
+        ao_year: Filter by year requested, e.g. "2014".
+        ao_name: Filter by AO name/subject text.
+        ao_status: Filter by status, e.g. "Final".
+        ao_requestor: Filter by requestor name.
+        ao_commenter: Filter by commenter name.
+        ao_representative: Filter by requestor's legal representative name.
+        hits_returned: Max results (max 200).
+    """
+    return _json(
+        _run_async(
+            server.search_advisory_opinions,
+            q=q,
+            ao_no=ao_no,
+            ao_year=ao_year,
+            ao_name=ao_name,
+            ao_status=ao_status,
+            ao_requestor=ao_requestor,
+            ao_commenter=ao_commenter,
+            ao_representative=ao_representative,
+            hits_returned=hits_returned,
+        )
+    )
+
+
+@beta_tool
+def get_advisory_opinion(ao_no: str) -> str:
+    """Get one FEC Advisory Opinion's full document by its AO number (federal only).
+
+    Args:
+        ao_no: AO number as returned by search_advisory_opinions, e.g. "2014-12".
+    """
+    return _json(_run_async(server.get_advisory_opinion, ao_no=ao_no))
+
+
 TOOLS = [
     list_rulebook_jurisdictions,
     list_rulebook_sources,
@@ -440,6 +494,8 @@ TOOLS = [
     search_filings,
     search_elections,
     get_reporting_calendar,
+    search_advisory_opinions,
+    get_advisory_opinion,
 ]
 
 

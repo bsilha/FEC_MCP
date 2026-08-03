@@ -80,6 +80,45 @@ async def test_network_error_with_empty_message_still_actionable(client):
         await client.search_disbursements(committee_id="C00401224")
 
 
+async def test_search_advisory_opinions_pins_type_and_forwards_filters(client):
+    client._client.get = AsyncMock(
+        return_value=FakeResponse(
+            200,
+            {
+                "advisory_opinions": [{"no": "2014-12", "name": "Bitcoin donations"}],
+                "total_advisory_opinions": 1,
+            },
+        )
+    )
+    data = await client.search_advisory_opinions(q="bitcoin", ao_status="Final")
+    assert data["advisory_opinions"][0]["no"] == "2014-12"
+
+    _, kwargs = client._client.get.call_args
+    assert kwargs["params"]["type"] == "advisory_opinions"
+    assert kwargs["params"]["q"] == "bitcoin"
+    assert kwargs["params"]["ao_status"] == "Final"
+    assert "ao_no" not in kwargs["params"]  # None values dropped
+
+
+async def test_search_advisory_opinions_caps_hits_returned(client):
+    client._client.get = AsyncMock(return_value=FakeResponse(200, {"advisory_opinions": []}))
+    await client.search_advisory_opinions(q="test", hits_returned=500)
+
+    _, kwargs = client._client.get.call_args
+    assert kwargs["params"]["hits_returned"] == 200
+
+
+async def test_get_advisory_opinion_hits_docs_endpoint(client):
+    client._client.get = AsyncMock(
+        return_value=FakeResponse(200, {"docs": [{"no": "2014-12", "name": "Bitcoin donations"}]})
+    )
+    data = await client.get_advisory_opinion("2014-12")
+    assert data["docs"][0]["no"] == "2014-12"
+
+    args, _ = client._client.get.call_args
+    assert args[0] == "/legal/docs/advisory_opinions/2014-12"
+
+
 def test_default_api_key_from_env(monkeypatch):
     monkeypatch.delenv("FEC_API_KEY", raising=False)
     c = OpenFECClient()

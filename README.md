@@ -118,6 +118,7 @@ fec-mcp
 | `search_filings` | Cross-committee filing search |
 | `search_elections` | Election search by state/office/cycle |
 | `get_reporting_calendar` | FEC reporting and election deadline dates |
+| `search_advisory_opinions` / `get_advisory_opinion` | FEC Advisory Opinions -- rulings on specific factual scenarios (e.g. "can a campaign accept cryptocurrency donations"), as distinct from the general compliance rules in the rulebook PDFs |
 
 ## Notes on scope
 

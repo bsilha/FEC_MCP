@@ -54,6 +54,13 @@ This server provides two kinds of tools:
   Schedule B disbursements (who a committee gave money to). This data is
   FEDERAL ONLY -- OpenFEC has no state-level candidates/committees/filings.
 
+- search_advisory_opinions / get_advisory_opinion: live search over FEC
+  Advisory Opinions -- the FEC's rulings on specific factual scenarios
+  (e.g. "can a campaign accept cryptocurrency donations"). Use these for
+  questions about a specific edge-case scenario, and search_rulebooks
+  instead for general compliance rules (contribution limits, disclaimer
+  requirements, etc.). Federal only, like the rest of the OpenFEC tools.
+
 If data/rulebooks/ has no PDFs loaded yet, rulebook tools will say so --
 tell the user to add FEC campaign guide PDFs there rather than answering
 compliance questions from general knowledge. Likewise, if a question is
@@ -633,6 +640,78 @@ async def get_reporting_calendar(
     except OpenFECError as exc:
         return {"error": str(exc)}
     return {"results": data.get("results", []), "pagination": data.get("pagination")}
+
+
+@mcp.tool()
+async def search_advisory_opinions(
+    q: str | None = None,
+    ao_no: str | None = None,
+    ao_year: str | None = None,
+    ao_name: str | None = None,
+    ao_status: str | None = None,
+    ao_requestor: str | None = None,
+    ao_commenter: str | None = None,
+    ao_representative: str | None = None,
+    hits_returned: int = 20,
+) -> dict[str, Any]:
+    """Search FEC Advisory Opinions via the live OpenFEC legal-search API (federal only).
+
+    Advisory Opinions are the FEC's rulings on specific factual scenarios a
+    requestor asked about (e.g. "can a campaign accept cryptocurrency
+    donations") -- use this for questions about a specific edge case or
+    scenario. Use search_rulebooks instead for general compliance rules
+    (contribution limits, disclaimer requirements, recordkeeping, etc.),
+    since those come from the campaign guide PDFs, not advisory opinions.
+
+    This endpoint is Elasticsearch-backed, not a fixed database schema, so
+    the exact fields on each returned advisory-opinion object aren't a
+    stable contract -- read whatever keys are actually present (typically
+    includes an AO number, name/subject, status, and document links) rather
+    than assuming specific field names.
+
+    Args:
+        q: Free-text search, e.g. "cryptocurrency donations".
+        ao_no: Exact AO number, e.g. "2014-12".
+        ao_year: Filter by year requested, e.g. "2014".
+        ao_name: Filter by AO name/subject text.
+        ao_status: Filter by status, e.g. "Final".
+        ao_requestor: Filter by requestor name.
+        ao_commenter: Filter by commenter name.
+        ao_representative: Filter by requestor's legal representative name.
+        hits_returned: Max results (max 200).
+    """
+    try:
+        data = await (await _client()).search_advisory_opinions(
+            q=q,
+            ao_no=ao_no,
+            ao_year=ao_year,
+            ao_name=ao_name,
+            ao_status=ao_status,
+            ao_requestor=ao_requestor,
+            ao_commenter=ao_commenter,
+            ao_representative=ao_representative,
+            hits_returned=hits_returned,
+        )
+    except OpenFECError as exc:
+        return {"error": str(exc)}
+    return {
+        "advisory_opinions": data.get("advisory_opinions", []),
+        "total_advisory_opinions": data.get("total_advisory_opinions"),
+    }
+
+
+@mcp.tool()
+async def get_advisory_opinion(ao_no: str) -> dict[str, Any]:
+    """Get one FEC Advisory Opinion's full document by its AO number (federal only).
+
+    Args:
+        ao_no: AO number as returned by search_advisory_opinions, e.g. "2014-12".
+    """
+    try:
+        data = await (await _client()).get_advisory_opinion(ao_no)
+    except OpenFECError as exc:
+        return {"error": str(exc)}
+    return {"docs": data.get("docs", [])}
 
 
 def main() -> None:
