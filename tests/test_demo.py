@@ -112,3 +112,117 @@ def test_sync_static_pdfs_handles_missing_source_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(demo_app, "DEFAULT_RULEBOOKS_DIR", tmp_path / "nope")
     monkeypatch.setattr(demo_app, "STATIC_RULEBOOKS_DIR", tmp_path / "static")
     demo_app._sync_static_pdfs()  # must not raise
+
+
+def test_split_citations_no_marker_returns_text_unchanged():
+    text = "The individual contribution limit is $3,500 per election."
+    prose, citations = demo_app._split_citations(text)
+    assert prose == text
+    assert citations == []
+
+
+def test_split_citations_parses_source_line():
+    text = (
+        "The individual contribution limit is $3,500 per election.\n\n"
+        "Sources:\n"
+        "SOURCE | candgui.pdf | 28 | federal"
+    )
+    prose, citations = demo_app._split_citations(text)
+    assert prose == "The individual contribution limit is $3,500 per election."
+    assert citations == [
+        {"kind": "source", "filename": "candgui.pdf", "page": "28", "jurisdiction": "federal"}
+    ]
+
+
+def test_split_citations_parses_ao_line_without_url():
+    text = "AO 2014-02 is the controlling opinion.\n\nSources:\nAO | 2014-02 | Final"
+    prose, citations = demo_app._split_citations(text)
+    assert prose == "AO 2014-02 is the controlling opinion."
+    assert citations == [{"kind": "ao", "ao_no": "2014-02", "status": "Final", "url": ""}]
+
+
+def test_split_citations_parses_ao_line_with_url():
+    text = (
+        "AO 2014-02 is the controlling opinion.\n\n"
+        "Sources:\n"
+        "AO | 2014-02 | Final | https://www.fec.gov/files/legal/aos/2014-02/2014-02.pdf"
+    )
+    prose, citations = demo_app._split_citations(text)
+    assert citations == [
+        {
+            "kind": "ao",
+            "ao_no": "2014-02",
+            "status": "Final",
+            "url": "https://www.fec.gov/files/legal/aos/2014-02/2014-02.pdf",
+        }
+    ]
+
+
+def test_split_citations_handles_multiple_citations_and_bullet_prefixes():
+    text = (
+        "Answer combining both a rulebook page and an AO.\n\n"
+        "Sources:\n"
+        "- SOURCE | candgui.pdf | 121 | federal\n"
+        "* AO | 2014-02 | Final"
+    )
+    prose, citations = demo_app._split_citations(text)
+    assert prose == "Answer combining both a rulebook page and an AO."
+    assert len(citations) == 2
+    assert citations[0]["kind"] == "source"
+    assert citations[1]["kind"] == "ao"
+
+
+def test_split_citations_falls_back_to_full_text_when_nothing_parses():
+    """Regression guard: a "Sources:" block that's present but entirely
+    malformed (e.g. the model didn't follow the format) must not silently
+    swallow the citation-looking text -- fall back to showing everything
+    rather than a garbled partial parse."""
+    text = "Some answer.\n\nSources:\nI looked at a few pages but won't list them."
+    prose, citations = demo_app._split_citations(text)
+    assert prose == text
+    assert citations == []
+
+
+def test_citation_chip_html_source_links_to_pdf_page():
+    chip = demo_app._citation_chip_html(
+        {"kind": "source", "filename": "candgui.pdf", "page": "28", "jurisdiction": "federal"}
+    )
+    assert '/app/static/rulebooks/candgui.pdf#page=28' in chip
+    assert "FEDERAL" in chip
+    assert "candgui.pdf, p. 28" in chip
+    assert "<a " in chip
+
+
+def test_citation_chip_html_source_with_non_numeric_page_omits_fragment():
+    chip = demo_app._citation_chip_html(
+        {"kind": "source", "filename": "candgui.pdf", "page": "n/a", "jurisdiction": "federal"}
+    )
+    assert "#page=" not in chip
+    assert "/app/static/rulebooks/candgui.pdf" in chip
+
+
+def test_citation_chip_html_ao_without_url_is_not_a_link():
+    chip = demo_app._citation_chip_html({"kind": "ao", "ao_no": "2014-02", "status": "Final", "url": ""})
+    assert "<a " not in chip
+    assert "AO 2014-02" in chip
+    assert "FINAL" in chip
+
+
+def test_citation_chip_html_ao_with_url_is_a_link():
+    chip = demo_app._citation_chip_html(
+        {
+            "kind": "ao",
+            "ao_no": "2014-02",
+            "status": "Final",
+            "url": "https://www.fec.gov/files/legal/aos/2014-02/2014-02.pdf",
+        }
+    )
+    assert '<a class="fec-cite" href="https://www.fec.gov/files/legal/aos/2014-02/2014-02.pdf"' in chip
+
+
+def test_citation_chip_html_escapes_html_in_fields():
+    chip = demo_app._citation_chip_html(
+        {"kind": "source", "filename": "<script>.pdf", "page": "1", "jurisdiction": "federal"}
+    )
+    assert "<script>" not in chip
+    assert "&lt;script&gt;" in chip

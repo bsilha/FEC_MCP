@@ -33,6 +33,53 @@ from fec_mcp.rulebook_index import DEFAULT_RULEBOOKS_DIR
 MODEL = "claude-opus-5"
 MAX_TOKENS = 4096
 
+# Demo-only addition to server.INSTRUCTIONS (never edit server.INSTRUCTIONS
+# itself for this): asks the model to end a cited answer with a fixed,
+# machine-parseable citation block so the UI can render real clickable
+# source chips instead of parsing free-form prose (fragile -- see
+# _split_citations). This is deliberately NOT part of the shared
+# server.INSTRUCTIONS constant, since that's also used by every other MCP
+# client (VS Code, Claude Desktop): those clients have no UI to turn a
+# "SOURCE | file | page | jurisdiction" line into a chip, so forcing this
+# format on them would just dump robotic-looking lines into a normal chat.
+CITATION_FORMAT_ADDENDUM = """
+
+Demo UI addendum: when your answer cites a page from a rulebook PDF (from
+search_rulebooks/get_rulebook_page) or an FEC Advisory Opinion (from
+search_advisory_opinions/get_advisory_opinion), end the entire answer with
+a line reading exactly "Sources:" followed by one citation per line, in
+exactly this format and no other text on those lines:
+
+SOURCE | <filename.pdf exactly as the tool returned it, e.g. candgui.pdf or states/ca/limits.pdf> | <page number> | <jurisdiction>
+AO | <ao_no, e.g. 2014-02> | <status, e.g. Final> | <a full https://www.fec.gov URL if you have one from the tool results, otherwise leave this field blank>
+
+Use the exact filename, page, jurisdiction, AO number, and status the
+tools returned -- never invent, reformat, or abbreviate them. Only add
+this block when you actually cited a specific rulebook page or advisory
+opinion; omit it entirely for answers with no such citation (e.g. live
+OpenFEC candidate/committee/disbursement data, or an answer saying nothing
+relevant is loaded).
+"""
+
+CITATION_CSS = """
+<style>
+.fec-cite-row { margin-top: 6px; }
+.fec-cite {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 0.78rem; padding: 3px 9px; margin: 2px 6px 2px 0;
+    border-radius: 6px; border: 1px solid rgba(49, 51, 63, 0.2);
+    text-decoration: none; color: inherit;
+}
+a.fec-cite:hover { border-color: #ff4b4b; }
+.fec-cite-badge {
+    font-weight: 700; font-size: 0.66rem; letter-spacing: .03em;
+    padding: 1px 5px; border-radius: 4px;
+    background: rgba(49, 51, 63, 0.08);
+}
+.fec-cite-static { opacity: 0.85; }
+</style>
+"""
+
 # Streamlit's built-in static file server (enabled in .streamlit/config.toml)
 # resolves its "static" folder relative to *this script's own directory*
 # (demo/static/), not the repo root or the directory `streamlit run` was
@@ -118,6 +165,81 @@ def _md(text: str) -> str:
     instead of plain text.
     """
     return text.replace("$", "\\$")
+
+
+def _split_citations(text: str) -> tuple[str, list[dict[str, str]]]:
+    """Split a model answer into (prose, citations) via the trailing
+    "Sources:" block CITATION_FORMAT_ADDENDUM asks the model to emit.
+
+    Degrades gracefully rather than risking a garbled partial parse: if
+    there's no "Sources:" marker, or nothing under it parses into a
+    well-formed citation line, returns the full original text unchanged
+    with an empty citation list.
+    """
+    marker_idx = text.rfind("Sources:")
+    if marker_idx == -1:
+        return text, []
+
+    prose = text[:marker_idx].rstrip()
+    block = text[marker_idx + len("Sources:") :]
+
+    citations: list[dict[str, str]] = []
+    for line in block.splitlines():
+        line = line.strip().lstrip("-*").strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if parts[0] == "SOURCE" and len(parts) == 4:
+            citations.append(
+                {"kind": "source", "filename": parts[1], "page": parts[2], "jurisdiction": parts[3]}
+            )
+        elif parts[0] == "AO" and len(parts) in (3, 4):
+            citations.append(
+                {
+                    "kind": "ao",
+                    "ao_no": parts[1],
+                    "status": parts[2],
+                    "url": parts[3] if len(parts) == 4 else "",
+                }
+            )
+        # Any other line under "Sources:" (stray commentary, a malformed
+        # row) is silently skipped rather than crashing the render.
+
+    if not citations:
+        return text, []
+    return prose, citations
+
+
+def _citation_chip_html(c: dict[str, str]) -> str:
+    if c["kind"] == "source":
+        try:
+            page_int: int | None = int(c["page"])
+        except ValueError:
+            page_int = None
+        href = _pdf_url(c["filename"], page_int)
+        label = html.escape(f"{c['filename']}, p. {c['page']}")
+        badge = html.escape(c["jurisdiction"].upper())
+        return (
+            f'<a class="fec-cite" href="{html.escape(href)}" target="_blank" rel="noopener">'
+            f'<span class="fec-cite-badge">{badge}</span>{label}</a>'
+        )
+
+    # kind == "ao"
+    label = html.escape(f"AO {c['ao_no']}")
+    badge = html.escape(c["status"].upper())
+    if c["url"]:
+        return (
+            f'<a class="fec-cite" href="{html.escape(c["url"])}" target="_blank" rel="noopener">'
+            f'<span class="fec-cite-badge">{badge}</span>{label}</a>'
+        )
+    return f'<span class="fec-cite fec-cite-static"><span class="fec-cite-badge">{badge}</span>{label}</span>'
+
+
+def _render_citations(citations: list[dict[str, str]]) -> None:  # pragma: no cover -- Streamlit call
+    if not citations:
+        return
+    chips = "".join(_citation_chip_html(c) for c in citations)
+    st.markdown(f'<div class="fec-cite-row">{chips}</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +711,7 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
     runner = client.beta.messages.tool_runner(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=server.INSTRUCTIONS,
+        system=server.INSTRUCTIONS + CITATION_FORMAT_ADDENDUM,
         tools=TOOLS,
         messages=messages,
     )
@@ -612,6 +734,7 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
 def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     _sync_static_pdfs()
     st.set_page_config(page_title="fec-mcp demo", page_icon="\U0001f5f3️")
+    st.markdown(CITATION_CSS, unsafe_allow_html=True)
     st.title("FEC compliance assistant (demo)")
     st.caption(
         "Same tools as the fec-mcp MCP server -- rulebook PDF search + live OpenFEC data -- "
@@ -660,7 +783,9 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
 
     for turn in st.session_state.messages:
         with st.chat_message(turn["role"]):
-            st.markdown(_md(turn["content"]))
+            prose, citations = _split_citations(turn["content"])
+            st.markdown(_md(prose))
+            _render_citations(citations)
             for call in turn.get("trace", []):
                 st.caption(_md(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})"))
 
@@ -691,7 +816,9 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
                 return
         for call in result["trace"]:
             st.caption(_md(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})"))
-        st.markdown(_md(result["text"]))
+        prose, citations = _split_citations(result["text"])
+        st.markdown(_md(prose))
+        _render_citations(citations)
         if result["stop_reason"] == "pause_turn":
             st.warning("Response paused mid-turn (hit the server-tool iteration limit) -- answer may be incomplete.")
 
