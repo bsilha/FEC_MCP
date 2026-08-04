@@ -16,17 +16,81 @@ FEC_API_KEY) to be set in the environment, or entered in the sidebar.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
+import shutil
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import streamlit as st
 from anthropic import Anthropic, beta_tool
 
 from fec_mcp import server
+from fec_mcp.rulebook_index import DEFAULT_RULEBOOKS_DIR
 
 MODEL = "claude-opus-5"
 MAX_TOKENS = 4096
+
+# Streamlit's built-in static file server (enabled in .streamlit/config.toml)
+# resolves its "static" folder relative to *this script's own directory*
+# (demo/static/), not the repo root or the directory `streamlit run` was
+# invoked from -- confirmed by running it: pointing this at the repo root
+# instead produced "no static folder found at .../demo/static". Served at
+# /app/static/<path>. _sync_static_pdfs mirrors data/rulebooks/ here so
+# rulebook PDFs get a real, clickable URL -- needed to link a citation
+# straight to its page (browsers' built-in PDF viewers honor a #page=N URL
+# fragment).
+STATIC_RULEBOOKS_DIR = Path(__file__).resolve().parent / "static" / "rulebooks"
+
+
+def _sync_static_pdfs() -> None:
+    """Mirror data/rulebooks/**/*.pdf into static/rulebooks/.
+
+    Only copies new/changed files (by size+mtime) and deletes stale copies
+    of PDFs no longer in data/rulebooks/, so this is cheap to call on every
+    Streamlit rerun and self-heals whenever PDFs are added, replaced, or
+    removed -- no manual sync step needed.
+    """
+    if not DEFAULT_RULEBOOKS_DIR.exists():
+        return
+
+    sources = {
+        p.relative_to(DEFAULT_RULEBOOKS_DIR): p for p in DEFAULT_RULEBOOKS_DIR.rglob("*.pdf")
+    }
+
+    if STATIC_RULEBOOKS_DIR.exists():
+        for existing in STATIC_RULEBOOKS_DIR.rglob("*.pdf"):
+            if existing.relative_to(STATIC_RULEBOOKS_DIR) not in sources:
+                existing.unlink()
+
+    for rel, src_path in sources.items():
+        dest_path = STATIC_RULEBOOKS_DIR / rel
+        src_stat = src_path.stat()
+        if dest_path.exists():
+            dest_stat = dest_path.stat()
+            if dest_stat.st_size == src_stat.st_size and dest_stat.st_mtime == src_stat.st_mtime:
+                continue
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_path, dest_path)
+
+
+def _pdf_url(source: str, page: int | None = None) -> str:
+    """URL for a rulebook PDF served via Streamlit's static file server.
+
+    Appending "#page=N" is a standard convention browsers' built-in PDF
+    viewers (Chrome, Firefox, Edge, Safari) honor to open straight to that
+    page -- no special viewer needed. `page` is the PDF's own internal page
+    order (the same number search_rulebooks/get_rulebook_page report), so
+    the link always lands on the exact page being cited; it may not match
+    a page number physically printed on the page itself if the document has
+    an unnumbered cover or table of contents.
+    """
+    url = f"/app/static/rulebooks/{quote(source)}"
+    if page:
+        url += f"#page={page}"
+    return url
 
 
 def _run_async(coro_fn, /, **kwargs) -> Any:
@@ -546,6 +610,7 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
 
 
 def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
+    _sync_static_pdfs()
     st.set_page_config(page_title="fec-mcp demo", page_icon="\U0001f5f3️")
     st.title("FEC compliance assistant (demo)")
     st.caption(
@@ -568,13 +633,24 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         has_key = bool(api_key) or bool(os.environ.get("ANTHROPIC_API_KEY"))
         if not has_key:
             st.info("Paste your Anthropic API key above to start chatting.")
-        jurisdictions = server.list_rulebook_jurisdictions()
+        sources_result = server.list_rulebook_sources()
         st.write("**Rulebook jurisdictions loaded:**")
-        if jurisdictions.get("jurisdictions"):
-            for j in jurisdictions["jurisdictions"]:
-                st.write(f"- {j['jurisdiction']} ({j['source_count']} source(s))")
+        if sources_result.get("sources"):
+            by_jurisdiction: dict[str, list[dict]] = {}
+            for s in sources_result["sources"]:
+                by_jurisdiction.setdefault(s["jurisdiction"], []).append(s)
+            for jurisdiction in sorted(by_jurisdiction):
+                srcs = by_jurisdiction[jurisdiction]
+                st.markdown(f"**{jurisdiction}** ({len(srcs)} source(s))")
+                for s in srcs:
+                    href = _pdf_url(s["source"])
+                    title = html.escape(s["title"])
+                    st.markdown(
+                        f'<a href="{href}" target="_blank" rel="noopener">{title}</a>',
+                        unsafe_allow_html=True,
+                    )
         else:
-            st.write(jurisdictions.get("message", "None loaded."))
+            st.write(sources_result.get("message", "None loaded."))
         if st.button("Clear conversation"):
             st.session_state.messages = []
             st.rerun()

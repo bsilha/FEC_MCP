@@ -13,3 +13,8 @@ build/
 data/rulebooks/.index/
 .mcp.json
 .claude/
+
+# demo/app.py's _sync_static_pdfs mirrors data/rulebooks/ here at runtime
+# so Streamlit's static file server can serve PDF-page-linking URLs --
+# generated, not source data.
+/demo/static/

@@ -38,6 +38,13 @@ This opens a browser tab with a chat box. It reuses `data/rulebooks/` and
 your `FEC_API_KEY` exactly like the MCP server does -- same search index,
 same live OpenFEC access, same jurisdiction coverage.
 
+Each loaded PDF in the sidebar is a clickable link that opens the actual
+source document in a new tab (via Streamlit's built-in static file server,
+enabled in `.streamlit/config.toml`). On first run, `demo/app.py` mirrors
+`data/rulebooks/` into `demo/static/rulebooks/` automatically -- this is
+generated, not something to edit or commit (it's gitignored and re-syncs
+itself whenever a PDF is added, changed, or removed).
+
 ## Deploy (Streamlit Community Cloud)
 
 Running it on your own machine means it's only up while you have a terminal

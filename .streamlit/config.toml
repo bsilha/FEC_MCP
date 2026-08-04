@@ -1,0 +1,6 @@
+# Enables Streamlit's built-in static file server (serves ./static/ at
+# /app/static/<path>), used by demo/app.py to link rulebook PDF citations
+# straight to the cited page. See demo/app.py's _sync_static_pdfs /
+# _pdf_url for how ./static/rulebooks/ gets populated and linked.
+[server]
+enableStaticServing = true
