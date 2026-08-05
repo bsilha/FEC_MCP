@@ -45,6 +45,16 @@ enabled in `.streamlit/config.toml`). On first run, `demo/app.py` mirrors
 generated, not something to edit or commit (it's gitignored and re-syncs
 itself whenever a PDF is added, changed, or removed).
 
+A cited answer's sources render as clickable chips (jurisdiction/status
+badge + link to the exact PDF page or advisory opinion), not just plain
+text -- this is a demo-only addition to the system prompt
+(`CITATION_FORMAT_ADDENDUM` in `demo/app.py`), not something that changes
+what other MCP clients (VS Code, Claude Desktop) see.
+
+The sidebar's "Try asking" buttons fill the chat input with a real example
+question (edit or send as-is) -- see `EXAMPLE_QUESTIONS` in `demo/app.py`
+to change them.
+
 ## Deploy (Streamlit Community Cloud)
 
 Running it on your own machine means it's only up while you have a terminal

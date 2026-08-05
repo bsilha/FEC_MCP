@@ -80,6 +80,18 @@ a.fec-cite:hover { border-color: #ff4b4b; }
 </style>
 """
 
+# Shown as clickable "Try asking" chips in the sidebar. Picked to cover
+# each tool family (rulebook search, live OpenFEC data, advisory opinions,
+# reporting calendar) plus one state-jurisdiction question, since that's a
+# real edge case this tool handles correctly (only answers for jurisdictions
+# that actually have PDFs loaded) that a naive tool wouldn't.
+EXAMPLE_QUESTIONS = [
+    "What's the individual contribution limit to a candidate committee this cycle?",
+    "Search advisory opinions about cryptocurrency donations",
+    "What are the next FEC quarterly reporting deadlines?",
+    "What's the contribution limit for a California state assembly race?",
+]
+
 # Streamlit's built-in static file server (enabled in .streamlit/config.toml)
 # resolves its "static" folder relative to *this script's own directory*
 # (demo/static/), not the repo root or the directory `streamlit run` was
@@ -774,6 +786,13 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
                     )
         else:
             st.write(sources_result.get("message", "None loaded."))
+
+        st.write("**Try asking:**")
+        for i, question in enumerate(EXAMPLE_QUESTIONS):
+            if st.button(question, key=f"example_question_{i}", use_container_width=True):
+                st.session_state["chat_input"] = question
+                st.rerun()
+
         if st.button("Clear conversation"):
             st.session_state.messages = []
             st.rerun()
@@ -789,7 +808,9 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
             for call in turn.get("trace", []):
                 st.caption(_md(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})"))
 
-    prompt = st.chat_input("Ask a federal (or loaded-state) campaign finance question...")
+    prompt = st.chat_input(
+        "Ask a federal (or loaded-state) campaign finance question...", key="chat_input"
+    )
     if not prompt:
         return
 
