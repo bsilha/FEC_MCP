@@ -102,6 +102,32 @@ HEADER_CSS = f"""
 </style>
 """
 
+# Streamlit's chat bubble background/avatar aren't reachable through the
+# [theme] config, and its own CSS classes are hashed per build (e.g.
+# "st-emotion-cache-1fee4w7") so they're not safe to target -- but its
+# data-testid attributes are Streamlit's own stable, documented markers for
+# testing, confirmed present in this version via a live inspection
+# (stChatMessage, stChatMessageAvatarUser/Assistant). Distinguishing user
+# vs. assistant this way, rather than nth-child/order, works regardless of
+# how many messages exist or their order.
+CHAT_BUBBLE_CSS = f"""
+<style>
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {{
+    background: {BRAND_ACCENT}; border-radius: 10px;
+}}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) * {{
+    color: #fff !important;
+}}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {{
+    background: #F2F4F6; border: 1px solid #D8DEE3; border-left: 3px solid {BRAND_STEEL};
+    border-radius: 10px;
+}}
+[data-testid="stChatMessageAvatarUser"], [data-testid="stChatMessageAvatarAssistant"] {{
+    display: none;
+}}
+</style>
+"""
+
 CITATION_CSS = f"""
 <style>
 .fec-cite-row {{ margin-top: 6px; }}
@@ -802,6 +828,7 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     st.set_page_config(page_title="fec-mcp demo", page_icon="\U0001f5f3️")
     st.markdown(CITATION_CSS, unsafe_allow_html=True)
     st.markdown(HEADER_CSS, unsafe_allow_html=True)
+    st.markdown(CHAT_BUBBLE_CSS, unsafe_allow_html=True)
     st.markdown(
         '<div class="fec-topbar"><div class="badge">FEC</div>'
         '<div class="name">FEC Compliance Assistant</div></div>'
