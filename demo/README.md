@@ -55,6 +55,13 @@ The sidebar's "Try asking" buttons fill the chat input with a real example
 question (edit or send as-is) -- see `EXAMPLE_QUESTIONS` in `demo/app.py`
 to change them.
 
+Colors (header bar, citation badges, jurisdiction chips, and the
+`.streamlit/config.toml` theme) are matched to an internal Aristotle
+Campaign Manager screenshot -- eyeballed, not exact brand hex values, so
+double-check against a real style guide if one turns up. See
+`BRAND_*` constants and `HEADER_CSS`/`CITATION_CSS` in `demo/app.py` to
+adjust.
+
 ## Deploy (Streamlit Community Cloud)
 
 Running it on your own machine means it's only up while you have a terminal

@@ -4,3 +4,15 @@
 # _pdf_url for how ./static/rulebooks/ gets populated and linked.
 [server]
 enableStaticServing = true
+
+# Colors matched to the internal Aristotle Campaign Manager app (eyeballed
+# from a dashboard + logo screenshot, confirmed by the user before this was
+# applied) -- see demo/app.py's HEADER_CSS/CITATION_CSS for the rest of the
+# color-matching (header bar, citation badges, jurisdiction chips), which
+# Streamlit's theme config alone can't reach.
+[theme]
+primaryColor = "#1E88C7"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F4F6"
+textColor = "#1F2A38"
+font = "sans serif"

@@ -68,22 +68,66 @@ citing in a sentence (e.g. "the controlling opinion is AO 2014-02"), just
 don't repeat its URL.
 """
 
-CITATION_CSS = """
+# Brand colors matched to the internal Aristotle Campaign Manager app --
+# eyeballed from a dashboard + logo screenshot the user provided, confirmed
+# before this was applied. Not the exact brand hex values (those weren't
+# available), so double-check against a real style guide if one shows up.
+BRAND_NAVY_DARK = "#1B2836"
+BRAND_NAVY_MID = "#263A4D"
+BRAND_STEEL = "#4B6B85"
+BRAND_ACCENT = "#1E88C7"
+BRAND_PURPLE = "#6E71C9"  # jurisdiction badges (federal/state) -- matches the chart's first data series
+BRAND_TEAL = "#3FC7C9"  # AO status badges -- matches the chart's second data series
+BRAND_CARD_ORANGE = "#E0954A"
+
+HEADER_CSS = f"""
 <style>
-.fec-cite-row { margin-top: 6px; }
-.fec-cite {
+.fec-topbar {{
+    background: linear-gradient(90deg, {BRAND_NAVY_DARK}, {BRAND_NAVY_MID});
+    color: #fff; padding: 10px 18px; border-radius: 8px 8px 0 0;
+    display: flex; align-items: center; gap: 10px; margin-bottom: 0;
+}}
+.fec-topbar .badge {{
+    width: 24px; height: 24px; border-radius: 5px; background: {BRAND_NAVY_MID};
+    border: 1px solid rgba(255,255,255,.25);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; flex-shrink: 0;
+}}
+.fec-topbar .name {{ font-weight: 700; font-size: 15px; letter-spacing: .01em; }}
+.fec-subbar {{
+    background: {BRAND_STEEL}; color: #fff; font-size: 12px; font-weight: 600;
+    padding: 7px 18px; letter-spacing: .02em; border-radius: 0 0 8px 8px;
+    margin-bottom: 18px;
+}}
+</style>
+"""
+
+CITATION_CSS = f"""
+<style>
+.fec-cite-row {{ margin-top: 6px; }}
+.fec-cite {{
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 0.78rem; padding: 3px 9px; margin: 2px 6px 2px 0;
     border-radius: 6px; border: 1px solid rgba(49, 51, 63, 0.2);
     text-decoration: none; color: inherit;
-}
-a.fec-cite:hover { border-color: #ff4b4b; }
-.fec-cite-badge {
+}}
+a.fec-cite:hover {{ border-color: {BRAND_ACCENT}; }}
+.fec-cite-badge {{
     font-weight: 700; font-size: 0.66rem; letter-spacing: .03em;
-    padding: 1px 5px; border-radius: 4px;
-    background: rgba(49, 51, 63, 0.08);
-}
-.fec-cite-static { opacity: 0.85; }
+    padding: 1px 5px; border-radius: 4px; color: #fff;
+}}
+.fec-cite-badge.fec-cite-badge-source {{ background: {BRAND_PURPLE}; }}
+.fec-cite-badge.fec-cite-badge-ao {{ background: {BRAND_TEAL}; }}
+.fec-cite-static {{ opacity: 0.85; }}
+
+.fec-juris-chip {{
+    display: inline-flex; align-items: baseline; gap: 4px;
+    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px;
+    margin: 2px 4px 2px 0; background: rgba(110, 113, 201, 0.15); color: {BRAND_PURPLE};
+}}
+.fec-juris-chip.fec-juris-chip-state {{
+    background: rgba(224, 149, 74, 0.18); color: {BRAND_CARD_ORANGE};
+}}
 </style>
 """
 
@@ -240,7 +284,7 @@ def _citation_chip_html(c: dict[str, str]) -> str:
         badge = html.escape(c["jurisdiction"].upper())
         return (
             f'<a class="fec-cite" href="{html.escape(href)}" target="_blank" rel="noopener">'
-            f'<span class="fec-cite-badge">{badge}</span>{label}</a>'
+            f'<span class="fec-cite-badge fec-cite-badge-source">{badge}</span>{label}</a>'
         )
 
     # kind == "ao"
@@ -249,9 +293,12 @@ def _citation_chip_html(c: dict[str, str]) -> str:
     if c["url"]:
         return (
             f'<a class="fec-cite" href="{html.escape(c["url"])}" target="_blank" rel="noopener">'
-            f'<span class="fec-cite-badge">{badge}</span>{label}</a>'
+            f'<span class="fec-cite-badge fec-cite-badge-ao">{badge}</span>{label}</a>'
         )
-    return f'<span class="fec-cite fec-cite-static"><span class="fec-cite-badge">{badge}</span>{label}</span>'
+    return (
+        f'<span class="fec-cite fec-cite-static">'
+        f'<span class="fec-cite-badge fec-cite-badge-ao">{badge}</span>{label}</span>'
+    )
 
 
 def _render_citations(citations: list[dict[str, str]]) -> None:  # pragma: no cover -- Streamlit call
@@ -754,10 +801,14 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     _sync_static_pdfs()
     st.set_page_config(page_title="fec-mcp demo", page_icon="\U0001f5f3️")
     st.markdown(CITATION_CSS, unsafe_allow_html=True)
-    st.title("FEC compliance assistant (demo)")
-    st.caption(
-        "Same tools as the fec-mcp MCP server -- rulebook PDF search + live OpenFEC data -- "
-        "wired into a plain chat page for demo purposes. Not for production use."
+    st.markdown(HEADER_CSS, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fec-topbar"><div class="badge">FEC</div>'
+        '<div class="name">FEC Compliance Assistant</div></div>'
+        '<div class="fec-subbar">Same tools as the fec-mcp MCP server &mdash; rulebook PDF '
+        "search + live OpenFEC data &mdash; wired into a plain chat page for demo purposes. "
+        "Not for production use.</div>",
+        unsafe_allow_html=True,
     )
 
     with st.sidebar:
@@ -783,7 +834,14 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
                 by_jurisdiction.setdefault(s["jurisdiction"], []).append(s)
             for jurisdiction in sorted(by_jurisdiction):
                 srcs = by_jurisdiction[jurisdiction]
-                st.markdown(f"**{jurisdiction}** ({len(srcs)} source(s))")
+                chip_class = "fec-juris-chip" + (
+                    "" if jurisdiction == "federal" else " fec-juris-chip-state"
+                )
+                st.markdown(
+                    f'<span class="{chip_class}">{html.escape(jurisdiction.upper())} '
+                    f"{len(srcs)}</span>",
+                    unsafe_allow_html=True,
+                )
                 for s in srcs:
                     href = _pdf_url(s["source"])
                     title = html.escape(s["title"])
