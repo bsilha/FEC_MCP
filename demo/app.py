@@ -59,6 +59,13 @@ this block when you actually cited a specific rulebook page or advisory
 opinion; omit it entirely for answers with no such citation (e.g. live
 OpenFEC candidate/committee/disbursement data, or an answer saying nothing
 relevant is loaded).
+
+Do not paste a raw URL (e.g. a fec.gov PDF link) into the body of the
+answer itself -- the Sources: block already renders as a clickable link
+for each citation, so a URL in the prose is both redundant and, unlike
+the Sources: block, not a real link there. You can still name what you're
+citing in a sentence (e.g. "the controlling opinion is AO 2014-02"), just
+don't repeat its URL.
 """
 
 CITATION_CSS = """
