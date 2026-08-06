@@ -68,6 +68,15 @@ citing in a sentence (e.g. "the controlling opinion is AO 2014-02"), just
 don't repeat its URL.
 """
 
+NO_HEADINGS_ADDENDUM = """
+
+Demo UI addendum: this chat renders each answer inside a compact, few-
+hundred-pixel-wide message bubble, not a document -- do not use Markdown
+headings (#, ##, ###, etc.) anywhere in your answer, since a heading
+renders far larger than the bubble is designed for and dominates it. Use
+a bolded lead-in sentence or plain paragraph breaks for structure instead.
+"""
+
 # Brand colors matched to the internal Aristotle Campaign Manager app --
 # eyeballed from a dashboard + logo screenshot the user provided, confirmed
 # before this was applied. Not the exact brand hex values (those weren't
@@ -124,6 +133,21 @@ CHAT_BUBBLE_CSS = f"""
 }}
 [data-testid="stChatMessageAvatarUser"], [data-testid="stChatMessageAvatarAssistant"] {{
     display: none;
+}}
+/* Markdown headings (#, ##, ...) render at document-scale font sizes by
+   default -- fine in a document, but a chat bubble is a few hundred px
+   wide, so an h1 towers over everything else in it. NO_HEADINGS_ADDENDUM
+   asks the model not to use headings here at all; this is the CSS-level
+   backstop for whenever it does anyway (or a citation/tool result happens
+   to contain one), so a heading is still visually distinct (bold) without
+   dominating the bubble. */
+[data-testid="stChatMessageContent"] h1,
+[data-testid="stChatMessageContent"] h2,
+[data-testid="stChatMessageContent"] h3,
+[data-testid="stChatMessageContent"] h4,
+[data-testid="stChatMessageContent"] h5,
+[data-testid="stChatMessageContent"] h6 {{
+    font-size: 1rem; font-weight: 700; margin: 0.5em 0 0.25em;
 }}
 </style>
 """
@@ -803,7 +827,7 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
     runner = client.beta.messages.tool_runner(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=server.INSTRUCTIONS + CITATION_FORMAT_ADDENDUM,
+        system=server.INSTRUCTIONS + CITATION_FORMAT_ADDENDUM + NO_HEADINGS_ADDENDUM,
         tools=TOOLS,
         messages=messages,
     )
