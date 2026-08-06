@@ -130,6 +130,20 @@ HEADER_CSS = f"""
 }}
 .fec-page-heading h2 {{ font-size: 19px; font-weight: 700; margin: 0 0 4px; }}
 .fec-page-heading p {{ font-size: 13.5px; color: #5B6B7A; margin: 0; }}
+
+.fec-side-label {{
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .07em; color: #5B6B7A; margin: 16px 0 8px;
+}}
+/* st.text_input's own label ("Your Anthropic API key") isn't something we
+   render ourselves -- Streamlit owns that markup -- but stWidgetLabel is
+   a stable, documented test id (confirmed via live DOM inspection, same
+   as the chat-bubble testids above), so it's safe to restyle to match
+   .fec-side-label rather than leaving it in Streamlit's default style. */
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .07em; color: #5B6B7A;
+}}
 </style>
 """
 
@@ -892,7 +906,6 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     )
 
     with st.sidebar:
-        st.subheader("Setup")
         api_key = st.text_input(
             "Your Anthropic API key",
             type="password",
@@ -907,7 +920,7 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         if not has_key:
             st.info("Paste your Anthropic API key above to start chatting.")
         sources_result = server.list_rulebook_sources()
-        st.write("**Rulebook jurisdictions loaded:**")
+        st.markdown('<p class="fec-side-label">Jurisdictions loaded</p>', unsafe_allow_html=True)
         if sources_result.get("sources"):
             by_jurisdiction: dict[str, list[dict]] = {}
             for s in sources_result["sources"]:
@@ -932,7 +945,7 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         else:
             st.write(sources_result.get("message", "None loaded."))
 
-        st.write("**Try asking:**")
+        st.markdown('<p class="fec-side-label">Try asking</p>', unsafe_allow_html=True)
         for i, question in enumerate(EXAMPLE_QUESTIONS):
             if st.button(question, key=f"example_question_{i}", use_container_width=True):
                 st.session_state["chat_input"] = question
