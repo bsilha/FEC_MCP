@@ -144,6 +144,17 @@ HEADER_CSS = f"""
     font-size: 10.5px; font-weight: 700; text-transform: uppercase;
     letter-spacing: .07em; color: #5B6B7A;
 }}
+
+/* main() sets layout="wide" so the header/content aren't capped at
+   Streamlit's default "centered" width (736px -- confirmed via live
+   inspection, well under the mockup's own 1180px). "wide" alone stretches
+   all the way to the browser edge though, which reads fine for the
+   header bar but makes long chat answers uncomfortably wide to read on a
+   large monitor -- cap it at the same 1180px the mockup itself used,
+   rather than truly edge-to-edge. */
+[data-testid="stMainBlockContainer"] {{
+    max-width: 1180px;
+}}
 </style>
 """
 
@@ -888,7 +899,7 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
 
 def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     _sync_static_pdfs()
-    st.set_page_config(page_title="fec-mcp demo", page_icon="\U0001f5f3️")
+    st.set_page_config(page_title="fec-mcp demo", page_icon="\U0001f5f3️", layout="wide")
     st.markdown(CITATION_CSS, unsafe_allow_html=True)
     st.markdown(HEADER_CSS, unsafe_allow_html=True)
     st.markdown(CHAT_BUBBLE_CSS, unsafe_allow_html=True)
