@@ -147,14 +147,13 @@ HEADER_CSS = f"""
 
 /* main() sets layout="wide" so the header/content aren't capped at
    Streamlit's default "centered" width (736px -- confirmed via live
-   inspection, well under the mockup's own 1180px). "wide" alone stretches
-   all the way to the browser edge though, which reads fine for the
-   header bar but makes long chat answers uncomfortably wide to read on a
-   large monitor -- cap it at the same 1180px the mockup itself used,
-   rather than truly edge-to-edge. */
-[data-testid="stMainBlockContainer"] {{
-    max-width: 1180px;
-}}
+   inspection, well under the mockup's own arbitrary 1180px). Deliberately
+   no max-width cap here at all: went with a 1180px cap first (matching
+   the mockup's own choice) but that still looked boxed-in on a wide
+   monitor, so this is genuinely edge-to-edge -- fills whatever the
+   browser window's actual width is, chosen over capping it, on the
+   understanding that very long answers may run wider than ideal on an
+   ultra-wide monitor as a tradeoff. */
 </style>
 """
 
