@@ -226,3 +226,21 @@ def test_citation_chip_html_escapes_html_in_fields():
     )
     assert "<script>" not in chip
     assert "&lt;script&gt;" in chip
+
+
+def test_today_addendum_reflects_the_real_current_date(monkeypatch):
+    """Regression guard: the raw Anthropic API has no built-in notion of
+    "today" (unlike Claude Desktop/Code's own client scaffolding), so
+    without this the model can't tell which upcoming deadline is actually
+    next. Must be computed fresh per call, not fixed at import time -- a
+    long-running demo session that started on one date must still report
+    the real date on a later one."""
+    import datetime as datetime_module
+
+    class FakeDate(datetime_module.date):
+        @classmethod
+        def today(cls):
+            return cls(2030, 5, 17)
+
+    monkeypatch.setattr(demo_app, "date", FakeDate)
+    assert "2030-05-17" in demo_app._today_addendum()

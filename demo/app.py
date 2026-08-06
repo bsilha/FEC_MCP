@@ -20,6 +20,7 @@ import html
 import json
 import os
 import shutil
+from datetime import date
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -77,6 +78,24 @@ renders far larger than the bubble is designed for and dominates it. Use
 a bolded lead-in sentence or plain paragraph breaks for structure instead.
 """
 
+
+def _today_addendum() -> str:
+    """Computed fresh per call (unlike the other *_ADDENDUM constants above,
+    which are fixed strings) since it has to reflect the real current date,
+    not whatever date happened to be current when this module was imported.
+
+    The raw Anthropic API has no built-in notion of "today" -- that's
+    something client-side scaffolding (Claude Desktop, Claude Code) adds on
+    top of it, which this demo's direct client.beta.messages.tool_runner()
+    call never gets. Without this, the model has no way to know which
+    upcoming deadline is actually next and has to hedge instead of
+    answering -- confirmed live: asked for "the next FEC quarterly
+    reporting deadlines" without this, it returned the full deadline list
+    with "I don't have a reliable read on today's date, so check this list
+    against your current date" instead of just naming the next one.
+    """
+    return f"\n\nDemo UI addendum: today's date is {date.today().isoformat()}.\n"
+
 # Brand colors matched to the internal Aristotle Campaign Manager app --
 # eyeballed from a dashboard + logo screenshot the user provided, confirmed
 # before this was applied. Not the exact brand hex values (those weren't
@@ -103,11 +122,14 @@ HEADER_CSS = f"""
     font-weight: 700; font-size: 13px; flex-shrink: 0;
 }}
 .fec-topbar .name {{ font-weight: 700; font-size: 15px; letter-spacing: .01em; }}
+.fec-topbar .name span {{ font-weight: 400; opacity: .7; margin-left: 6px; font-size: 12px; }}
 .fec-subbar {{
     background: {BRAND_STEEL}; color: #fff; font-size: 12px; font-weight: 600;
     padding: 7px 18px; letter-spacing: .02em; border-radius: 0 0 8px 8px;
     margin-bottom: 18px;
 }}
+.fec-page-heading h2 {{ font-size: 19px; font-weight: 700; margin: 0 0 4px; }}
+.fec-page-heading p {{ font-size: 13.5px; color: #5B6B7A; margin: 0; }}
 </style>
 """
 
@@ -827,7 +849,10 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
     runner = client.beta.messages.tool_runner(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=server.INSTRUCTIONS + CITATION_FORMAT_ADDENDUM + NO_HEADINGS_ADDENDUM,
+        system=server.INSTRUCTIONS
+        + CITATION_FORMAT_ADDENDUM
+        + NO_HEADINGS_ADDENDUM
+        + _today_addendum(),
         tools=TOOLS,
         messages=messages,
     )
@@ -854,11 +879,15 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     st.markdown(HEADER_CSS, unsafe_allow_html=True)
     st.markdown(CHAT_BUBBLE_CSS, unsafe_allow_html=True)
     st.markdown(
-        '<div class="fec-topbar"><div class="badge">FEC</div>'
-        '<div class="name">FEC Compliance Assistant</div></div>'
-        '<div class="fec-subbar">Same tools as the fec-mcp MCP server &mdash; rulebook PDF '
-        "search + live OpenFEC data &mdash; wired into a plain chat page for demo purposes. "
-        "Not for production use.</div>",
+        '<div class="fec-topbar"><div class="badge">A</div>'
+        '<div class="name">FEC Compliance Assistant<span>fec-mcp demo</span></div></div>'
+        '<div class="fec-subbar">HOME&nbsp;&nbsp;&middot;&nbsp;&nbsp;RULEBOOKS&nbsp;&nbsp;'
+        "&middot;&nbsp;&nbsp;CANDIDATES &amp; COMMITTEES&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
+        "ADVISORY OPINIONS</div>"
+        '<div class="fec-page-heading"><h2>FEC Compliance Assistant</h2>'
+        "<p>Same tools as the fec-mcp MCP server &mdash; rulebook PDF search + live OpenFEC "
+        "data &mdash; wired into a plain chat page for demo purposes. Not for production "
+        "use.</p></div>",
         unsafe_allow_html=True,
     )
 
