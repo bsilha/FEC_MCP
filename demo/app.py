@@ -110,9 +110,32 @@ BRAND_CARD_ORANGE = "#E0954A"
 
 HEADER_CSS = f"""
 <style>
+/* In the mockup, the header sits above BOTH the sidebar and the chat
+   column, as one bar spanning the whole app -- but Streamlit renders the
+   sidebar and "main" content as two separate regions (confirmed via live
+   DOM inspection: stAppViewContainer contains both as siblings), and
+   st.markdown() from inside main() can only render into the main side.
+   There's no API to inject a real sibling of the sidebar, so this uses
+   position: fixed instead: taken out of normal document flow entirely and
+   positioned relative to the browser viewport, so it visually overlays
+   both regions regardless of where it's actually nested in the DOM.
+   top: 60px places it right below Streamlit's own native toolbar
+   (confirmed height via stHeader's bounding box). z-index needed a second
+   look, caught by actually screenshotting this rather than trusting
+   bounding-box math alone: an initial z-index of 999000 (just below the
+   native toolbar's 999990) left the navy bar invisible over the sidebar,
+   because stSidebar itself carries z-index 999991 -- higher than the
+   toolbar -- and painted over it there. Both stHeader and stSidebar sit
+   below 999999, and this only occupies y=60-137 (stHeader ends at y=60,
+   sidebar's own content starts at y=137 -- see the margin-top rules
+   below), so it doesn't visually cover either's actual controls despite
+   now outranking both. */
+.fec-header-overlay {{
+    position: fixed; top: 60px; left: 0; right: 0; z-index: 999999;
+}}
 .fec-topbar {{
     background: linear-gradient(90deg, {BRAND_NAVY_DARK}, {BRAND_NAVY_MID});
-    color: #fff; padding: 10px 18px; border-radius: 8px 8px 0 0;
+    color: #fff; padding: 10px 18px;
     display: flex; align-items: center; gap: 10px; margin-bottom: 0;
 }}
 .fec-topbar .badge {{
@@ -125,9 +148,19 @@ HEADER_CSS = f"""
 .fec-topbar .name span {{ font-weight: 400; opacity: .7; margin-left: 6px; font-size: 12px; }}
 .fec-subbar {{
     background: {BRAND_STEEL}; color: #fff; font-size: 12px; font-weight: 600;
-    padding: 7px 18px; letter-spacing: .02em; border-radius: 0 0 8px 8px;
-    margin-bottom: 18px;
+    padding: 7px 18px; letter-spacing: .02em;
 }}
+/* The fixed overlay is ~77px tall (44px topbar + 33px subbar, confirmed
+   live) -- push the sidebar's and main content's own content down by that
+   much more, on top of whatever padding they already have for
+   Streamlit's native toolbar, so nothing renders underneath the overlay. */
+/* These two needed different values, confirmed by measuring each live
+   rather than assuming symmetry: the sidebar's own content already
+   cleared Streamlit's native 60px toolbar on its own (only needed +77 for
+   the new overlay), but stMainBlockContainer's baseline position was 0 --
+   it needed +137 (60 native toolbar + 77 overlay) to actually clear both. */
+[data-testid="stSidebarUserContent"] {{ margin-top: 77px; }}
+[data-testid="stMainBlockContainer"] {{ margin-top: 137px; }}
 .fec-page-heading h2 {{ font-size: 19px; font-weight: 700; margin: 0 0 4px; }}
 .fec-page-heading p {{ font-size: 13.5px; color: #5B6B7A; margin: 0; }}
 
@@ -903,11 +936,13 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     st.markdown(HEADER_CSS, unsafe_allow_html=True)
     st.markdown(CHAT_BUBBLE_CSS, unsafe_allow_html=True)
     st.markdown(
+        '<div class="fec-header-overlay">'
         '<div class="fec-topbar"><div class="badge">A</div>'
         '<div class="name">FEC Compliance Assistant<span>fec-mcp demo</span></div></div>'
         '<div class="fec-subbar">HOME&nbsp;&nbsp;&middot;&nbsp;&nbsp;RULEBOOKS&nbsp;&nbsp;'
         "&middot;&nbsp;&nbsp;CANDIDATES &amp; COMMITTEES&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
         "ADVISORY OPINIONS</div>"
+        "</div>"
         '<div class="fec-page-heading"><h2>FEC Compliance Assistant</h2>'
         "<p>Same tools as the fec-mcp MCP server &mdash; rulebook PDF search + live OpenFEC "
         "data &mdash; wired into a plain chat page for demo purposes. Not for production "
