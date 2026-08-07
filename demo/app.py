@@ -119,19 +119,20 @@ HEADER_CSS = f"""
    position: fixed instead: taken out of normal document flow entirely and
    positioned relative to the browser viewport, so it visually overlays
    both regions regardless of where it's actually nested in the DOM.
-   top: 60px places it right below Streamlit's own native toolbar
-   (confirmed height via stHeader's bounding box). z-index needed a second
+   top: 0 pins it to the very top of the viewport -- deliberately
+   painting over Streamlit's own native toolbar (Deploy button, the
+   three-dot menu) rather than sitting below it, per explicit user
+   feedback that a white strip above the navy bar read as leftover
+   whitespace rather than a full-bleed header. z-index needed a second
    look, caught by actually screenshotting this rather than trusting
    bounding-box math alone: an initial z-index of 999000 (just below the
    native toolbar's 999990) left the navy bar invisible over the sidebar,
    because stSidebar itself carries z-index 999991 -- higher than the
-   toolbar -- and painted over it there. Both stHeader and stSidebar sit
-   below 999999, and this only occupies y=60-137 (stHeader ends at y=60,
-   sidebar's own content starts at y=137 -- see the margin-top rules
-   below), so it doesn't visually cover either's actual controls despite
-   now outranking both. */
+   toolbar -- and painted over it there. 999999 outranks both, so the
+   overlay now wins everywhere it covers (y=0-137, see the margin-top
+   rules below for where sidebar/main content starts beneath it). */
 .fec-header-overlay {{
-    position: fixed; top: 60px; left: 0; right: 0; z-index: 999999;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 999999;
 }}
 .fec-topbar {{
     background: linear-gradient(90deg, {BRAND_NAVY_DARK}, {BRAND_NAVY_MID});
@@ -194,22 +195,30 @@ HEADER_CSS = f"""
     height: calc(100% - 137px);
 }}
 [data-testid="stMainBlockContainer"] {{ margin-top: 137px; }}
-/* The sidebar's own top strip (y=0-60, behind Streamlit's native
-   Deploy/menu toolbar over the main column) shows the sidebar's normal
-   grey background (#F2F4F6) since nothing else covers it there -- always
-   true, but only became visually obvious as a mismatched "grey bar" once
-   there was a bold navy header immediately below it to contrast against.
-   Matching it to the native toolbar's own white background makes the top
-   strip read as one consistent bar across the full width instead of two
-   different colors meeting at the sidebar's edge. */
+/* The collapse-arrow button (stSidebarHeader) sits below the navy
+   overlay now, not above it -- per explicit user feedback that it read
+   as floating in the leftover white strip when the overlay started at
+   top: 60px. top: 77px places it right where the overlay's own height
+   ends (44px topbar + 33px subbar, confirmed live), so the two sit
+   flush with no gap and no overlap; its own white background keeps it
+   visually distinct from the sidebar's grey below it rather than
+   blending in. Still position: fixed for the same reason as the navy
+   overlay above: stSidebarContent (its actual DOM parent) is
+   position: relative with overflow-y: auto, so anything short of
+   escaping to the viewport via fixed positioning either uses the wrong
+   containing block or gets clipped by that overflow. */
 [data-testid="stSidebarHeader"] {{
     background: #FFFFFF;
     position: fixed;
-    top: 0; left: 0; width: 300px;
+    top: 77px; left: 0; width: 300px;
     z-index: 2;
 }}
-.fec-page-heading h2 {{ font-size: 19px; font-weight: 700; margin: 0 0 4px; }}
-.fec-page-heading p {{ font-size: 13.5px; color: #5B6B7A; margin: 0; }}
+/* Sized well above the mockup's 19px/13.5px: the mockup was a small,
+   contained preview card, but at real full-width scale the same sizes
+   read as tiny text floating in a mostly-empty page -- per explicit
+   user feedback ("should scale up... too much whitespace"). */
+.fec-page-heading h2 {{ font-size: 30px; font-weight: 700; margin: 0 0 8px; }}
+.fec-page-heading p {{ font-size: 16px; color: #5B6B7A; margin: 0; max-width: 62ch; }}
 
 .fec-side-label {{
     font-size: 10.5px; font-weight: 700; text-transform: uppercase;
