@@ -191,24 +191,27 @@ HEADER_CSS = f"""
    flex parent -- matches the fixed pixel offsets already used throughout
    this file for a resizable-but-not-actually-resized-in-practice sidebar. */
 [data-testid="stSidebarContent"] {{
-    margin-top: 137px;
-    height: calc(100% - 137px);
+    margin-top: 77px;
+    height: calc(100% - 77px);
 }}
-[data-testid="stMainBlockContainer"] {{ margin-top: 137px; }}
-/* The collapse-arrow button (stSidebarHeader) sits below the navy
-   overlay now, not above it -- per explicit user feedback that it read
-   as floating in the leftover white strip when the overlay started at
-   top: 60px. top: 77px places it right where the overlay's own height
-   ends (44px topbar + 33px subbar, confirmed live), so the two sit
-   flush with no gap and no overlap; its own white background keeps it
-   visually distinct from the sidebar's grey below it rather than
-   blending in. Still position: fixed for the same reason as the navy
-   overlay above: stSidebarContent (its actual DOM parent) is
-   position: relative with overflow-y: auto, so anything short of
-   escaping to the viewport via fixed positioning either uses the wrong
-   containing block or gets clipped by that overflow. */
+[data-testid="stMainBlockContainer"] {{ margin-top: 77px; }}
+/* Reserving a dedicated 60px row for the collapse-arrow button
+   (stSidebarHeader) below the header left a visible white bar sitting
+   above "YOUR ANTHROPIC API KEY" -- per explicit user feedback, that
+   gap should go away entirely rather than just changing color, so
+   sidebar/main content now both start right at 77px (the header's own
+   height), same as before this button existed. The button no longer
+   gets its own row: no background (so there's nothing to show when
+   it's not being hovered -- Streamlit already keeps the icon itself
+   invisible until :hover, confirmed live), and it floats via
+   position: fixed at that same top: 77px, overlapping the first bit of
+   real content instead of pushing it down. Still position: fixed for
+   the same reason as the navy overlay above: stSidebarContent (its
+   actual DOM parent) is position: relative with overflow-y: auto, so
+   anything short of escaping to the viewport via fixed positioning
+   either uses the wrong containing block or gets clipped by that
+   overflow. */
 [data-testid="stSidebarHeader"] {{
-    background: #FFFFFF;
     position: fixed;
     top: 77px; left: 0; width: 300px;
     z-index: 2;
