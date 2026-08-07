@@ -154,13 +154,60 @@ HEADER_CSS = f"""
    live) -- push the sidebar's and main content's own content down by that
    much more, on top of whatever padding they already have for
    Streamlit's native toolbar, so nothing renders underneath the overlay. */
-/* These two needed different values, confirmed by measuring each live
-   rather than assuming symmetry: the sidebar's own content already
-   cleared Streamlit's native 60px toolbar on its own (only needed +77 for
-   the new overlay), but stMainBlockContainer's baseline position was 0 --
-   it needed +137 (60 native toolbar + 77 overlay) to actually clear both. */
-[data-testid="stSidebarUserContent"] {{ margin-top: 77px; }}
+/* Pushing stSidebarUserContent's *content* down with margin-top wasn't
+   enough on its own: the actual scrollable element is its parent,
+   stSidebarContent, which still spanned the full sidebar height (y=0 to
+   the bottom) even after the content inside it was pushed down --
+   confirmed by a screenshot showing the scrollbar track/thumb still
+   running the full height, visibly crossing right through the navy
+   header (this is a Linux/Chromium overlay-scrollbar quirk: the track is
+   tied to the scroll box's own bounding rect, not to how far down its
+   content is pushed, and it paints above the navy overlay's z-index
+   regardless). Shifting stSidebarContent itself (not just its content)
+   down by the header's height, with a matching height reduction so it
+   still ends at the same bottom edge instead of overflowing past the
+   viewport, moves the scrollbar's actual box down along with the content
+   instead of leaving its track behind at y=0.
+   That alone regressed the collapse-arrow button (stSidebarHeader, a
+   DOM child of stSidebarContent): dragging the whole scroll box down
+   dragged the button down with it, off of its native y=0-60 spot and
+   into the middle of the now-blank space above the real content --
+   caught by screenshotting the sidebar and seeing an empty white box
+   where "YOUR ANTHROPIC API KEY" used to start immediately.
+   position: absolute didn't fix it either: stSidebarContent itself is
+   already position: relative (confirmed live), so it -- not stSidebar --
+   became the containing block, and its own overflow-y: auto then clipped
+   the button anyway since a negative top pushing it above the box's own
+   padding edge falls outside that box's visible scroll region. Only
+   position: fixed actually escapes both the wrong containing block and
+   the overflow clip, pinning the button to the viewport itself the same
+   way the navy overlay above is pinned; confirmed via
+   document.elementFromPoint() actually hitting stSidebarHeader at (150,
+   20), not just trusting getBoundingClientRect() math (which had looked
+   right under the position: absolute attempt too, despite the button
+   being invisible there). width: 300px hardcodes the sidebar's default
+   width since position: fixed can't inherit an auto width from its old
+   flex parent -- matches the fixed pixel offsets already used throughout
+   this file for a resizable-but-not-actually-resized-in-practice sidebar. */
+[data-testid="stSidebarContent"] {{
+    margin-top: 137px;
+    height: calc(100% - 137px);
+}}
 [data-testid="stMainBlockContainer"] {{ margin-top: 137px; }}
+/* The sidebar's own top strip (y=0-60, behind Streamlit's native
+   Deploy/menu toolbar over the main column) shows the sidebar's normal
+   grey background (#F2F4F6) since nothing else covers it there -- always
+   true, but only became visually obvious as a mismatched "grey bar" once
+   there was a bold navy header immediately below it to contrast against.
+   Matching it to the native toolbar's own white background makes the top
+   strip read as one consistent bar across the full width instead of two
+   different colors meeting at the sidebar's edge. */
+[data-testid="stSidebarHeader"] {{
+    background: #FFFFFF;
+    position: fixed;
+    top: 0; left: 0; width: 300px;
+    z-index: 2;
+}}
 .fec-page-heading h2 {{ font-size: 19px; font-weight: 700; margin: 0 0 4px; }}
 .fec-page-heading p {{ font-size: 13.5px; color: #5B6B7A; margin: 0; }}
 
