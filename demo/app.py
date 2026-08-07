@@ -134,6 +134,37 @@ HEADER_CSS = f"""
 .fec-header-overlay {{
     position: fixed; top: 0; left: 0; right: 0; z-index: 999999;
 }}
+/* Covering the native toolbar (stHeader) entirely also hides
+   stExpandSidebarButton -- the real control Streamlit renders there to
+   re-open a collapsed sidebar -- leaving no way back in once collapsed.
+   Raising the button's own z-index doesn't fix this: position: fixed
+   changes where an element is *drawn*, not which stacking context it
+   belongs to, and this button is nested inside stToolbar/stHeader,
+   which Streamlit pins at z-index 999990. No z-index on the button
+   itself can out-rank our overlay while its ancestor is capped below
+   it -- confirmed live via document.elementsFromPoint(), which showed
+   the button in the paint stack but always beneath the navy bar
+   regardless of how high its own z-index was pushed.
+   The only real fix is promoting stHeader itself above our overlay.
+   That also exposes "Deploy" and the three-dot menu, which aren't
+   wanted in this design, so those are hidden outright rather than
+   left to clash with the navy bar. background: transparent on stHeader
+   matters too: collapsing the sidebar widens stHeader from the main
+   column's width to the full page width (confirmed live -- it's
+   x=300-1920 expanded, x=0-1920 collapsed), and its native opaque
+   white background would otherwise paint over our badge/title
+   wherever that newly-widened box overlaps them. */
+[data-testid="stHeader"] {{ z-index: 1000000; background: transparent; }}
+[data-testid="stAppDeployButton"] {{ display: none; }}
+[data-testid="stMainMenu"] {{ display: none; }}
+/* stExpandSidebarButton only exists in the DOM once the sidebar is
+   collapsed (confirmed live via a testid diff before/after collapsing)
+   -- its native icon color (a dark, low-contrast grey meant for a
+   white toolbar) needs to go white to read against navy. The color
+   value lives on a nested <span>, not the button itself, so both
+   levels are targeted since Streamlit's generated class names aren't
+   stable enough to target directly. */
+[data-testid="stExpandSidebarButton"] span {{ color: #ffffff !important; }}
 .fec-topbar {{
     background: linear-gradient(90deg, {BRAND_NAVY_DARK}, {BRAND_NAVY_MID});
     color: #fff; padding: 10px 18px;
