@@ -104,9 +104,49 @@ BRAND_NAVY_DARK = "#1B2836"
 BRAND_NAVY_MID = "#263A4D"
 BRAND_STEEL = "#4B6B85"
 BRAND_ACCENT = "#1E88C7"
-BRAND_PURPLE = "#6E71C9"  # jurisdiction badges (federal/state) -- matches the chart's first data series
+BRAND_PURPLE = "#6E71C9"  # source citation badges -- matches the chart's first data series
 BRAND_TEAL = "#3FC7C9"  # AO status badges -- matches the chart's second data series
-BRAND_CARD_ORANGE = "#E0954A"
+
+# Rulebook jurisdictions come back from list_rulebook_sources() as lowercase
+# two-letter USPS codes (e.g. "ca") -- fine for internal filtering, but per
+# explicit user feedback a sidebar heading reading "CA" is less scannable
+# than "California" once there's more than one or two states loaded.
+US_STATE_NAMES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
+    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
+    "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri",
+    "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey",
+    "NM": "New Mexico", "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
+    "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont",
+    "VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+    "DC": "District of Columbia",
+}
+
+
+def _jurisdiction_label(jurisdiction: str) -> str:
+    """Sidebar heading text for a jurisdiction code, e.g. "ca" -> "California".
+
+    Deliberately Title Case for every jurisdiction including "Federal" --
+    not "FEDERAL" -- so every heading in the sidebar list shares the exact
+    same capitalization as well as the same font/size (both driven by
+    st.expander's own label styling, same widget for every row), per
+    explicit user feedback that headings should look uniform rather than
+    federal reading as visually distinct from the states.
+    """
+    if jurisdiction == "federal":
+        return "Federal"
+    return US_STATE_NAMES.get(jurisdiction.upper(), jurisdiction.upper())
+
+
+def _jurisdiction_sort_key(jurisdiction: str) -> tuple:
+    """Federal always first (per explicit user request), states after it in
+    alphabetical order by their *displayed* name -- not their two-letter
+    code -- so the visual order always matches what's on screen."""
+    return (0, "") if jurisdiction == "federal" else (1, _jurisdiction_label(jurisdiction))
+
 
 HEADER_CSS = f"""
 <style>
@@ -435,15 +475,6 @@ a.fec-cite:hover {{ border-color: {BRAND_ACCENT}; }}
 .fec-cite-badge.fec-cite-badge-source {{ background: {BRAND_PURPLE}; }}
 .fec-cite-badge.fec-cite-badge-ao {{ background: {BRAND_TEAL}; }}
 .fec-cite-static {{ opacity: 0.85; }}
-
-.fec-juris-chip {{
-    display: inline-flex; align-items: baseline; gap: 4px;
-    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px;
-    margin: 2px 4px 2px 0; background: rgba(110, 113, 201, 0.15); color: {BRAND_PURPLE};
-}}
-.fec-juris-chip.fec-juris-chip-state {{
-    background: rgba(224, 149, 74, 0.18); color: {BRAND_CARD_ORANGE};
-}}
 </style>
 """
 
@@ -1152,28 +1183,30 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         if not has_key:
             st.info("Paste your Anthropic API key above to start chatting.")
         sources_result = server.list_rulebook_sources()
-        st.markdown('<p class="fec-side-label">Jurisdictions loaded</p>', unsafe_allow_html=True)
+        st.markdown('<p class="fec-side-label">Rulebooks loaded</p>', unsafe_allow_html=True)
         if sources_result.get("sources"):
             by_jurisdiction: dict[str, list[dict]] = {}
             for s in sources_result["sources"]:
                 by_jurisdiction.setdefault(s["jurisdiction"], []).append(s)
-            for jurisdiction in sorted(by_jurisdiction):
+            # Every jurisdiction row is the same st.expander widget -- same
+            # label font/size for "Federal" as for "California" or "Georgia"
+            # by construction, rather than the old hand-styled chips (one
+            # color for federal, another for states) that made federal read
+            # as visually distinct. Federal starts expanded since it's what
+            # most people are looking for; states start collapsed, since a
+            # flat list of all 32 loaded PDFs at once was the original
+            # "cluttered" complaint this replaces.
+            for jurisdiction in sorted(by_jurisdiction, key=_jurisdiction_sort_key):
                 srcs = by_jurisdiction[jurisdiction]
-                chip_class = "fec-juris-chip" + (
-                    "" if jurisdiction == "federal" else " fec-juris-chip-state"
-                )
-                st.markdown(
-                    f'<span class="{chip_class}">{html.escape(jurisdiction.upper())} '
-                    f"{len(srcs)}</span>",
-                    unsafe_allow_html=True,
-                )
-                for s in srcs:
-                    href = _pdf_url(s["source"])
-                    title = html.escape(s["title"])
-                    st.markdown(
-                        f'<a href="{href}" target="_blank" rel="noopener">{title}</a>',
-                        unsafe_allow_html=True,
-                    )
+                label = f"{_jurisdiction_label(jurisdiction)} ({len(srcs)})"
+                with st.expander(label, expanded=(jurisdiction == "federal")):
+                    for s in srcs:
+                        href = _pdf_url(s["source"])
+                        title = html.escape(s["title"])
+                        st.markdown(
+                            f'<a href="{href}" target="_blank" rel="noopener">{title}</a>',
+                            unsafe_allow_html=True,
+                        )
         else:
             st.write(sources_result.get("message", "None loaded."))
 

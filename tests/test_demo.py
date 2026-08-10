@@ -244,3 +244,22 @@ def test_today_addendum_reflects_the_real_current_date(monkeypatch):
 
     monkeypatch.setattr(demo_app, "date", FakeDate)
     assert "2030-05-17" in demo_app._today_addendum()
+
+
+def test_jurisdiction_label_spells_out_known_state_codes():
+    assert demo_app._jurisdiction_label("ca") == "California"
+    assert demo_app._jurisdiction_label("ny") == "New York"
+    assert demo_app._jurisdiction_label("federal") == "Federal"
+
+
+def test_jurisdiction_label_falls_back_to_the_code_for_unknown_jurisdictions():
+    """Regression guard: an unrecognized two-letter code (e.g. a US
+    territory not in the lookup table) must still render as something
+    readable, not raise or silently disappear from the sidebar."""
+    assert demo_app._jurisdiction_label("zz") == "ZZ"
+
+
+def test_jurisdiction_sort_key_puts_federal_first_then_states_alphabetically():
+    jurisdictions = ["ny", "federal", "ca", "ga"]
+    ordered = sorted(jurisdictions, key=demo_app._jurisdiction_sort_key)
+    assert ordered == ["federal", "ca", "ga", "ny"]
