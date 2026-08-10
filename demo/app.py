@@ -241,17 +241,27 @@ HEADER_CSS = f"""
    height), same as before this button existed. The button no longer
    gets its own row: no background (so there's nothing to show when
    it's not being hovered -- Streamlit already keeps the icon itself
-   invisible until :hover, confirmed live), and it floats via
-   position: fixed at that same top: 77px, overlapping the first bit of
-   real content instead of pushing it down. Still position: fixed for
-   the same reason as the navy overlay above: stSidebarContent (its
-   actual DOM parent) is position: relative with overflow-y: auto, so
-   anything short of escaping to the viewport via fixed positioning
-   either uses the wrong containing block or gets clipped by that
-   overflow. */
+   invisible until :hover, confirmed live), and it overlaps the first
+   bit of real content instead of pushing it down.
+   This was originally position: fixed (viewport-relative, hardcoded
+   width: 300px to match the sidebar's default), but that doesn't track
+   the sidebar's actual width -- confirmed live by dragging the sidebar
+   wider and watching the button stay planted at the old 300px mark
+   instead of following the new edge, per an explicit user screenshot
+   showing exactly that. position: absolute fixes it: stSidebarContent
+   (its actual DOM parent) is already position: relative, so left: 0;
+   right: 0 (no hardcoded width at all) resolves against *that* box's
+   real, live width instead of the viewport's -- confirmed live that
+   the button's x-position follows a drag-resize from 300px to 500px to
+   400px correctly, landing at the new right edge every time. This
+   still doesn't hit the overflow-clipping problem an earlier absolute
+   attempt ran into (see the collapsed-state comment below): that one
+   needed a *negative* top to climb back above stSidebarContent's own
+   top edge, which its overflow-y: auto clipped: top: 0 here stays
+   entirely inside the box's own visible area, nothing to clip. */
 [data-testid="stSidebarHeader"] {{
-    position: fixed;
-    top: 77px; left: 0; width: 300px;
+    position: absolute;
+    top: 0; left: 0; right: 0;
     z-index: 2;
     pointer-events: none;
 }}
@@ -276,19 +286,20 @@ HEADER_CSS = f"""
    now-transparent container does nothing, which is fine since there's
    no visible target there to interact with anyway). */
 [data-testid="stSidebarCollapseButton"] {{ pointer-events: auto; }}
-/* This position: fixed rule is meant to go fully off-screen when the
-   sidebar collapses, by inheriting stSidebar's own collapse transform
-   (translateX(-300px), confirmed live) as its containing block -- but
-   that depends on stSidebar's real width matching the 300px hardcoded
-   above exactly, in every browser. A user report of a second, stray
-   icon appearing below the navy header when collapsed -- one this file
-   couldn't reproduce locally at several viewport sizes -- points at
-   exactly this button not making it fully off-screen somewhere the
-   pixel math doesn't line up. display: none whenever the sidebar
-   reports aria-expanded="false" removes that dependency entirely: it's
-   not a matter of degree (mostly off-screen) but unconditionally gone,
-   regardless of what stSidebar's actual collapsed width and transform
-   turn out to be on any given browser. */
+/* Explicitly hides this button once the sidebar reports
+   aria-expanded="false", rather than relying on its position rule
+   above to push it off-screen or out of view on its own. This dates
+   back to when the button was position: fixed and its off-screen
+   position depended on inheriting stSidebar's collapse transform as
+   its containing block -- fragile in a way that once produced a stray
+   duplicate icon a user could see but this file couldn't reproduce
+   locally. Now that it's position: absolute inside stSidebarContent,
+   there's a simpler reason to keep this: stSidebarContent's own
+   height: calc(100% - 77px) rule below only applies while expanded
+   (nothing un-sets it on collapse), so without this the button would
+   still be sitting at the top of that box, just with nothing left to
+   click through to. Unconditional and independent of whatever the
+   sidebar's actual collapsed dimensions turn out to be. */
 [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarHeader"] {{
     display: none;
 }}
