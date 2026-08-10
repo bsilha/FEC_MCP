@@ -253,7 +253,29 @@ HEADER_CSS = f"""
     position: fixed;
     top: 77px; left: 0; width: 300px;
     z-index: 2;
+    pointer-events: none;
 }}
+/* The rule above overlaps the real sidebar widgets that render right
+   below it (they share the same y=77+ starting point -- that's the
+   whole point of floating it instead of reserving a row), and that
+   silently broke every widget underneath: confirmed live that clicking
+   the API key input, its help tooltip, and the eye/show-password
+   toggle all hit stSidebarHeader instead via elementFromPoint, even
+   though nothing about it is visible there -- an element with no drawn
+   content still intercepts pointer events unless told not to. This
+   went unnoticed through every earlier round of this file's testing
+   because that testing checked screenshots and elementFromPoint on
+   THIS button, never whether the real widgets underneath remained
+   clickable.
+   pointer-events: none on the container makes it fully transparent to
+   the mouse -- clicks now fall through to the real input/tooltip/eye
+   button beneath. The collapse button itself needs pointer-events:
+   auto to opt back in, otherwise it would stop working too (verified
+   live: hovering directly over the button still reveals and clicks it
+   correctly with this override in place; hovering elsewhere in the
+   now-transparent container does nothing, which is fine since there's
+   no visible target there to interact with anyway). */
+[data-testid="stSidebarCollapseButton"] {{ pointer-events: auto; }}
 /* This position: fixed rule is meant to go fully off-screen when the
    sidebar collapses, by inheriting stSidebar's own collapse transform
    (translateX(-300px), confirmed live) as its containing block -- but
