@@ -340,6 +340,28 @@ HEADER_CSS = f"""
     font-size: 10.5px; font-weight: 700; text-transform: uppercase;
     letter-spacing: .07em; color: #5B6B7A;
 }}
+/* Streamlit overlays its own "Press Enter to apply" hint (shown while
+   a typed value hasn't been submitted yet) directly on top of the
+   input via position: absolute, right: 9px -- confirmed live this
+   isn't reserving its own row below the input, it's genuinely drawn
+   over the input's own bottom-right corner. With a fully-typed API
+   key filling most of the input's width, that put the hint text
+   overlapping both the typed characters and the eye/show-password
+   button (confirmed live: hint's own right edge landed at x=261,
+   inside the eye button's x=237-269 span) -- per explicit user
+   feedback ("very cramped"), not just close together but genuinely
+   colliding. right: 46px clears the 32px-wide eye button plus a small
+   gap; the added background/padding/radius turns it into a small
+   pill distinct from the dots behind it instead of bare text
+   overlapping them, confirmed live to still look reasonable with a
+   short typed value too (not just a long API key). */
+[data-testid="stSidebar"] [data-testid="InputInstructions"] {{
+    right: 46px;
+    bottom: 8px;
+    background: rgba(255,255,255,.9);
+    padding: 1px 4px;
+    border-radius: 3px;
+}}
 
 /* main() sets layout="wide" so the header/content aren't capped at
    Streamlit's default "centered" width (736px -- confirmed via live
