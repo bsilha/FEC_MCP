@@ -303,6 +303,23 @@ HEADER_CSS = f"""
 [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarHeader"] {{
     display: none;
 }}
+/* stSidebarHeader's floating footprint (y=77-137, see above) overlaps
+   the very top of the real content that starts right where it does --
+   confirmed live via bounding boxes that the collapse button (x=258-290,
+   y=93-121) genuinely intersects both the API key help icon (x=254-270,
+   y=81-97) and the eye/show-password toggle (x=237-269, y=117-133),
+   not just sitting close to them. Per explicit user feedback ("more
+   spaced out"), pushing just stSidebarUserContent (the real widgets,
+   not stSidebarHeader or stSidebarContent) down by a further 40px --
+   roughly the button's own height plus breathing room -- clears both
+   without reserving anywhere near Streamlit's native 76px
+   (60px + 16px margin) for this row, which is what caused the original
+   "white gap" complaint two rounds ago. Confirmed live the button and
+   the help icon no longer overlap after this (button ends at y=121,
+   help icon starts at y=121). */
+[data-testid="stSidebarUserContent"] {{
+    margin-top: 40px;
+}}
 /* Sized well above the mockup's 19px/13.5px: the mockup was a small,
    contained preview card, but at real full-width scale the same sizes
    read as tiny text floating in a mostly-empty page -- per explicit
