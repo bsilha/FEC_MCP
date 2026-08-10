@@ -342,25 +342,27 @@ HEADER_CSS = f"""
 }}
 /* Streamlit overlays its own "Press Enter to apply" hint (shown while
    a typed value hasn't been submitted yet) directly on top of the
-   input via position: absolute, right: 9px -- confirmed live this
-   isn't reserving its own row below the input, it's genuinely drawn
-   over the input's own bottom-right corner. With a fully-typed API
-   key filling most of the input's width, that put the hint text
-   overlapping both the typed characters and the eye/show-password
-   button (confirmed live: hint's own right edge landed at x=261,
-   inside the eye button's x=237-269 span) -- per explicit user
-   feedback ("very cramped"), not just close together but genuinely
-   colliding. right: 46px clears the 32px-wide eye button plus a small
-   gap; the added background/padding/radius turns it into a small
-   pill distinct from the dots behind it instead of bare text
-   overlapping them, confirmed live to still look reasonable with a
-   short typed value too (not just a long API key). */
+   input via position: absolute -- confirmed live this isn't reserving
+   its own row, it's genuinely drawn over the input's own bottom-right
+   corner, which collided with the eye/show-password button for a
+   fully-typed API key (fixed in an earlier round by giving it
+   clearance and a background pill). Per further user feedback, rather
+   than fine-tune that overlay further, move it below the input
+   entirely: position: static drops it out of the overlay and back
+   into normal document flow, where it's already the last child of
+   stTextInput (confirmed via live DOM inspection) -- so no manual
+   top/left math is needed, it simply renders as the next line after
+   the input, the same way any other block-level sibling would. The
+   parent's height grows to fit it automatically, which pushes
+   "Jurisdictions loaded" down slightly whenever this hint is showing;
+   confirmed live that's the full extent of the effect, and that it
+   still looks right with both a long and a short typed value. */
 [data-testid="stSidebar"] [data-testid="InputInstructions"] {{
-    right: 46px;
-    bottom: 8px;
-    background: rgba(255,255,255,.9);
-    padding: 1px 4px;
-    border-radius: 3px;
+    position: static;
+    background: transparent;
+    padding: 2px 0 0;
+    display: block;
+    text-align: right;
 }}
 
 /* main() sets layout="wide" so the header/content aren't capped at
