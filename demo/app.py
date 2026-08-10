@@ -137,34 +137,41 @@ HEADER_CSS = f"""
 /* Covering the native toolbar (stHeader) entirely also hides
    stExpandSidebarButton -- the real control Streamlit renders there to
    re-open a collapsed sidebar -- leaving no way back in once collapsed.
-   Raising the button's own z-index doesn't fix this: position: fixed
-   changes where an element is *drawn*, not which stacking context it
-   belongs to, and this button is nested inside stToolbar/stHeader,
-   which Streamlit pins at z-index 999990. No z-index on the button
-   itself can out-rank our overlay while its ancestor is capped below
-   it -- confirmed live via document.elementsFromPoint(), which showed
-   the button in the paint stack but always beneath the navy bar
-   regardless of how high its own z-index was pushed.
-   The only real fix is promoting stHeader itself above our overlay.
-   That also exposes "Deploy" and the three-dot menu, which aren't
-   wanted in this design, so those are hidden outright rather than
-   left to clash with the navy bar. background: transparent on stHeader
-   matters too: collapsing the sidebar widens stHeader from the main
-   column's width to the full page width (confirmed live -- it's
-   x=300-1920 expanded, x=0-1920 collapsed), and its native opaque
-   white background would otherwise paint over our badge/title
-   wherever that newly-widened box overlaps them. */
-[data-testid="stHeader"] {{ z-index: 1000000; background: transparent; }}
-[data-testid="stAppDeployButton"] {{ display: none; }}
-[data-testid="stMainMenu"] {{ display: none; }}
-/* stExpandSidebarButton only exists in the DOM once the sidebar is
-   collapsed (confirmed live via a testid diff before/after collapsing)
-   -- its native icon color (a dark, low-contrast grey meant for a
-   white toolbar) needs to go white to read against navy. The color
-   value lives on a nested <span>, not the button itself, so both
-   levels are targeted since Streamlit's generated class names aren't
-   stable enough to target directly. */
-[data-testid="stExpandSidebarButton"] span {{ color: #ffffff !important; }}
+   An earlier attempt promoted stHeader itself above the overlay so the
+   button could show through its native spot, in the navy bar -- z-index
+   alone on the button can't do it, since position: fixed changes where
+   an element is *drawn*, not which stacking context it belongs to, and
+   the button is nested inside stToolbar/stHeader, which Streamlit pins
+   at z-index 999990, below our overlay's 999999 (confirmed live via
+   document.elementsFromPoint()). That approach worked, but per explicit
+   user feedback it put an icon inside the branded navy bar, which
+   wasn't wanted, and it left a second, stray icon visible beneath the
+   header too (most likely this file's own [data-testid="stSidebarHeader"]
+   rule below failing to slide fully off-screen in every browser --
+   its off-screen position depends on inheriting stSidebar's own
+   collapse transform as its containing block, which isn't guaranteed
+   pixel-perfect everywhere).
+   Simpler fix: don't fight stHeader's stacking context at all. Give
+   stExpandSidebarButton its own position: fixed with an explicit
+   top/left, the same trick already used for the sidebar's own collapse
+   button below -- since it now renders at y=93+ instead of inside
+   stHeader's y=0-60 native slot, it no longer spatially overlaps the
+   overlay (which only covers y=0-77), so there's no z-index fight left
+   to have; it only needs to clear stMainBlockContainer's own content
+   at that spot, a much lower bar. Native background is transparent
+   (confirmed live) and the button reads as a bare icon directly on the
+   white page without it, so a light card-style background/shadow was
+   added to match the rest of this file's chip/citation styling rather
+   than leaving it looking unstyled. */
+[data-testid="stExpandSidebarButton"] {{
+    position: fixed;
+    top: 93px; left: 14px;
+    z-index: 3;
+    background: #ffffff;
+    border: 1px solid #D8DEE3;
+    border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.15);
+}}
 .fec-topbar {{
     background: linear-gradient(90deg, {BRAND_NAVY_DARK}, {BRAND_NAVY_MID});
     color: #fff; padding: 10px 18px;
@@ -246,6 +253,22 @@ HEADER_CSS = f"""
     position: fixed;
     top: 77px; left: 0; width: 300px;
     z-index: 2;
+}}
+/* This position: fixed rule is meant to go fully off-screen when the
+   sidebar collapses, by inheriting stSidebar's own collapse transform
+   (translateX(-300px), confirmed live) as its containing block -- but
+   that depends on stSidebar's real width matching the 300px hardcoded
+   above exactly, in every browser. A user report of a second, stray
+   icon appearing below the navy header when collapsed -- one this file
+   couldn't reproduce locally at several viewport sizes -- points at
+   exactly this button not making it fully off-screen somewhere the
+   pixel math doesn't line up. display: none whenever the sidebar
+   reports aria-expanded="false" removes that dependency entirely: it's
+   not a matter of degree (mostly off-screen) but unconditionally gone,
+   regardless of what stSidebar's actual collapsed width and transform
+   turn out to be on any given browser. */
+[data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarHeader"] {{
+    display: none;
 }}
 /* Sized well above the mockup's 19px/13.5px: the mockup was a small,
    contained preview card, but at real full-width scale the same sizes
