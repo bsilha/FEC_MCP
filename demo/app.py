@@ -1182,7 +1182,21 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         has_key = bool(api_key) or bool(os.environ.get("ANTHROPIC_API_KEY"))
         if not has_key:
             st.info("Paste your Anthropic API key above to start chatting.")
-        sources_result = server.list_rulebook_sources()
+        # list_rulebook_sources() is near-instant once the on-disk index is
+        # built (reads a cached SQLite file), but the *first* call after
+        # anything changes the index's manifest -- adding a PDF, or editing
+        # TITLE_OVERRIDES the way this file's own sidebar reorganization
+        # just did -- triggers a full rebuild that re-extracts text from
+        # every loaded PDF. Confirmed live this takes ~35-50s for the 32
+        # PDFs currently loaded, during which Streamlit had already
+        # rendered everything above this point (the API key input, its
+        # info box) and was simply blocked here with nothing on screen to
+        # show it -- indistinguishable from the sidebar being broken. A
+        # spinner turns that into a legible "still loading" state; it's
+        # only actually visible on that first post-change run, since every
+        # later rerun hits the cache.
+        with st.spinner("Loading rulebook index..."):
+            sources_result = server.list_rulebook_sources()
         st.markdown('<p class="fec-side-label">Rulebooks loaded</p>', unsafe_allow_html=True)
         if sources_result.get("sources"):
             by_jurisdiction: dict[str, list[dict]] = {}
