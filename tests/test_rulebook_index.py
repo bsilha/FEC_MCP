@@ -15,15 +15,22 @@ class FakePage:
         return self._text
 
 
+class FakeMetadata:
+    def __init__(self, title: str | None):
+        self.title = title
+
+
 class FakeReader:
     """Stand-in for pypdf.PdfReader, keyed by the registry below."""
 
     registry: dict[str, list[str]] = {}
+    metadata_registry: dict[str, str] = {}
 
     def __init__(self, path: str):
         self.path = path
         self.pages = [FakePage(t) for t in self.registry[path]]
-        self.metadata = None
+        meta_title = self.metadata_registry.get(path)
+        self.metadata = FakeMetadata(meta_title) if meta_title is not None else None
 
 
 def _write_dummy_pdf(path: Path, page_texts: list[str]) -> None:
@@ -90,6 +97,46 @@ def test_index_rebuilds_when_pdf_changes(tmp_path, monkeypatch):
 
     idx2 = RulebookIndex(rulebooks_dir=tmp_path)
     assert len(idx2.search("disclaimer requirements")) == 1
+
+
+def test_title_override_wins_over_metadata_and_filename_fallback(tmp_path, monkeypatch):
+    """Regression guard: TITLE_OVERRIDES exists specifically because both
+    PDF metadata and the filename-derived fallback are unreliable (garbage
+    embedded metadata in some real PDFs, mangled acronyms/casing in the
+    fallback) -- confirm the override table wins over both rather than only
+    applying when metadata happens to be empty."""
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+    monkeypatch.setitem(ri.TITLE_OVERRIDES, "fecfrm9i.pdf", "FEC Form 9 — Electioneering Communications")
+
+    pdf_path = tmp_path / "fecfrm9i.pdf"
+    _write_dummy_pdf(pdf_path, ["Who must file"])
+    # Deliberately garbage metadata title, same shape as the real bug this
+    # table works around (e.g. the Georgia doc's actual embedded title is
+    # "Microsoft Word - 2026 Campaign Finance Act- SEC Website (Draft-2).docx").
+    FakeReader.metadata_registry[str(pdf_path)] = "Microsoft Word - garbage-export-name.docx"
+
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    sources = idx.list_sources()
+    assert sources[0].title == "FEC Form 9 — Electioneering Communications"
+
+
+def test_title_override_change_triggers_a_rebuild(tmp_path, monkeypatch):
+    """The manifest-diffing rebuild check is normally driven by a PDF's own
+    size/mtime -- editing TITLE_OVERRIDES changes neither, so without
+    folding its fingerprint into the manifest too, a title edit would never
+    take effect against an already-built on-disk index."""
+    monkeypatch.setattr(ri, "PdfReader", FakeReader)
+
+    pdf_path = tmp_path / "guide.pdf"
+    _write_dummy_pdf(pdf_path, ["some rulebook text"])
+
+    monkeypatch.setitem(ri.TITLE_OVERRIDES, "guide.pdf", "Old Title")
+    idx = RulebookIndex(rulebooks_dir=tmp_path)
+    assert idx.list_sources()[0].title == "Old Title"
+
+    monkeypatch.setitem(ri.TITLE_OVERRIDES, "guide.pdf", "New Title")
+    idx2 = RulebookIndex(rulebooks_dir=tmp_path)
+    assert idx2.list_sources()[0].title == "New Title"
 
 
 def test_query_sanitization_does_not_raise(tmp_path):

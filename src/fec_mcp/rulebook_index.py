@@ -23,6 +23,7 @@ rather than relying on any hardcoded or model-recalled figures.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -36,6 +37,94 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RULEBOOKS_DIR = REPO_ROOT / "data" / "rulebooks"
 
 FEDERAL_JURISDICTION = "federal"
+
+# Real PDF titles are unreliable two different ways: embedded metadata is
+# sometimes garbage baked in by whatever tool produced the PDF (e.g. the
+# Georgia transparency act's own metadata title is literally
+# "Microsoft Word - 2026 Campaign Finance Act- SEC Website (Draft-2).docx"),
+# and the filename-derived fallback mangles anything without underscores/
+# hyphens to split on ("fecfrm9i.pdf" -> "Fecfrm9I") or downcases acronyms
+# it does split ("SEC-Rules-...pdf" -> "Sec Rules..."). This table is a
+# manually curated override, reviewed against each PDF's actual first page
+# (not just guessed from the filename) -- confirmed, for example, that
+# fecfrm3xi.pdf's own instructions say "filed by party committees and
+# political action committees", not "unauthorized committees" as the old
+# metadata-derived title claimed. Keyed by the same relative, forward-slash
+# source path used everywhere else in this module (e.g.
+# "fec_form_instructions/fecfrm1i.pdf", "states/ca/Manual_1_Final.pdf").
+TITLE_OVERRIDES: dict[str, str] = {
+    # Federal -- campaign guides
+    "candgui.pdf": "Campaign Guide for Congressional Candidates (October 2021)",
+    "colagui.pdf": "Campaign Guide for Corporations and Labor Organizations (January 2018)",
+    "nongui.pdf": "Campaign Guide for Nonconnected Committees (May 2008)",
+    "partygui.pdf": "Campaign Guide for Political Party Committees (February 2024)",
+    "contribution-limits-chart-2025-2026.pdf": "Contribution Limits for 2025–2026",
+    # Federal -- form instructions
+    "fec_form_instructions/fecfrm1i.pdf": "FEC Form 1 — Statement of Organization",
+    "fec_form_instructions/fecfrm1mi.pdf": "FEC Form 1M — Multicandidate Status Notification",
+    "fec_form_instructions/fecfrm2i.pdf": "FEC Form 2 — Statement of Candidacy",
+    "fec_form_instructions/fecfrm3i.pdf": (
+        "FEC Form 3 — Report of Receipts and Disbursements (Authorized Committees)"
+    ),
+    "fec_form_instructions/fecfrm3li.pdf": "FEC Form 3L — Lobbyist Bundling Disclosure",
+    "fec_form_instructions/fecfrm3pi.pdf": (
+        "FEC Form 3P — Report of Receipts and Disbursements (Presidential Candidates)"
+    ),
+    "fec_form_instructions/fecfrm3posti.pdf": "FEC Form 3 — Post-Election Detailed Summary Page",
+    "fec_form_instructions/fecfrm3pposti.pdf": (
+        "FEC Form 3P — Post-Election Detailed Summary Page (Page 3)"
+    ),
+    "fec_form_instructions/fecfrm3xei.pdf": (
+        "FEC Form 3X — Schedule E, Itemized Independent Expenditures"
+    ),
+    "fec_form_instructions/fecfrm3xi.pdf": (
+        "FEC Form 3X — Report of Receipts and Disbursements (Party Committees and PACs)"
+    ),
+    "fec_form_instructions/fecfrm4i.pdf": "FEC Form 4 — Convention Committee Report",
+    "fec_form_instructions/fecfrm5i.pdf": (
+        "FEC Form 5 — Independent Expenditures and Contributions Received Report"
+    ),
+    "fec_form_instructions/fecfrm6i.pdf": "FEC Form 6 — 48-Hour Notice of Contributions/Loans Received",
+    "fec_form_instructions/fecfrm7i.pdf": (
+        "FEC Form 7 — Report of Communication Costs (Corporations and Membership Organizations)"
+    ),
+    "fec_form_instructions/fecfrm8i.pdf": "FEC Form 8 — Debt Settlement Plan",
+    "fec_form_instructions/fecfrm9i.pdf": "FEC Form 9 — Electioneering Communications",
+    "fec_form_instructions/fecfrm13i.pdf": "FEC Form 13 — Inaugural Committee Report",
+    # California
+    "states/ca/Manual_1_Final.pdf": (
+        "California Campaign Disclosure Manual 1 — State Candidates and Their Committees"
+    ),
+    "states/ca/Manual_2_Final.pdf": (
+        "California Campaign Disclosure Manual 2 — Local Candidates and Superior Court Judges"
+    ),
+    "states/ca/Manual_3_Final.pdf": "California Campaign Disclosure Manual 3 — Ballot Measure Committees",
+    "states/ca/Manual_4_Final.pdf": "California Campaign Disclosure Manual 4 — General Purpose Committees",
+    "states/ca/Manual_5_Final.pdf": "California Campaign Disclosure Manual 5 — Major Donor Committees",
+    "states/ca/Manual_6_Final.pdf": (
+        "California Campaign Disclosure Manual 6 — Independent Expenditure Committees"
+    ),
+    "states/ca/Manual_7_Final.pdf": "California Campaign Disclosure Manual 7 — Slate Mailer Organizations",
+    # Georgia
+    "states/ga/Georgia_Government_Transparency_And_Campaign_Finance_Act_2026.pdf": (
+        "Georgia — Government Transparency and Campaign Finance Act (2026 Edition)"
+    ),
+    "states/ga/SEC-Rules-Updated-2023-002.pdf": "Georgia — State Ethics Commission Rules (Updated July 2023)",
+    # New York
+    "states/ny/New_York_State_BOE_Campaign_Finance_Handbook_2023.pdf": (
+        "New York — Campaign Finance Handbook (2023)"
+    ),
+}
+
+
+def _title_overrides_fingerprint() -> str:
+    """Stable (not Python hash-randomization-dependent) fingerprint of
+    TITLE_OVERRIDES's contents, folded into the manifest below so editing
+    this table invalidates the on-disk index automatically -- without this,
+    changing a title wouldn't change any PDF's size/mtime, so the existing
+    manifest-diffing rebuild check would never notice and the on-disk cache
+    would keep serving the old titles indefinitely."""
+    return hashlib.sha256(json.dumps(TITLE_OVERRIDES, sort_keys=True).encode("utf-8")).hexdigest()
 
 # Bump whenever the sources/pages table schema changes shape (column
 # renames/additions, not just data changes -- those are already handled by
@@ -86,7 +175,9 @@ def _build_fts_query(query: str) -> str:
     return " OR ".join(tokens)
 
 
-def _pdf_title(reader: PdfReader, fallback: str) -> str:
+def _pdf_title(reader: PdfReader, rel_source: str, fallback: str) -> str:
+    if rel_source in TITLE_OVERRIDES:
+        return TITLE_OVERRIDES[rel_source]
     try:
         meta_title = reader.metadata.title if reader.metadata else None
     except Exception:
@@ -109,13 +200,17 @@ def _jurisdiction_for(rel_path: Path) -> str:
 
 
 def _manifest(pdf_paths: list[tuple[Path, str]]) -> list[dict]:
-    return sorted(
-        (
-            {"source": rel, "size": p.stat().st_size, "mtime": p.stat().st_mtime}
-            for p, rel in pdf_paths
-        ),
-        key=lambda d: d["source"],
-    )
+    entries = [
+        {"source": rel, "size": p.stat().st_size, "mtime": p.stat().st_mtime}
+        for p, rel in pdf_paths
+    ]
+    # Synthetic entry, not a real PDF: folds TITLE_OVERRIDES into the same
+    # manifest-diffing rebuild check used for actual file changes (see
+    # _title_overrides_fingerprint's docstring for why this is needed at
+    # all). "__title_overrides__" can't collide with a real source path --
+    # rglob("*.pdf") only ever produces paths ending in ".pdf".
+    entries.append({"source": "__title_overrides__", "size": 0, "mtime": _title_overrides_fingerprint()})
+    return sorted(entries, key=lambda d: d["source"])
 
 
 class RulebookIndex:
@@ -213,7 +308,9 @@ class RulebookIndex:
                 )
                 continue
 
-            title = _pdf_title(reader, fallback=abs_path.stem.replace("_", " ").replace("-", " ").title())
+            title = _pdf_title(
+                reader, rel_source, fallback=abs_path.stem.replace("_", " ").replace("-", " ").title()
+            )
             num_pages = len(reader.pages)
             conn.execute(
                 "INSERT INTO sources (source, title, page_count, jurisdiction) VALUES (?, ?, ?, ?)",
