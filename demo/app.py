@@ -67,6 +67,16 @@ for each citation, so a URL in the prose is both redundant and, unlike
 the Sources: block, not a real link there. You can still name what you're
 citing in a sentence (e.g. "the controlling opinion is AO 2014-02"), just
 don't repeat its URL.
+
+Every claim in your answer about what a loaded document says, covers, or
+requires must have a corresponding line in the Sources: block. This
+applies to asides and offers just as much as to the main answer --
+including claims about a jurisdiction other than the one the answer is
+mainly about (e.g. ending a federal answer with "California's manuals
+also cover this"). An uncited claim of that kind renders as plain prose
+with no chip to click, so the reader has no way to check it. If you
+haven't actually retrieved a page supporting such a claim, either search
+for one first and cite it, or leave the claim out.
 """
 
 NO_HEADINGS_ADDENDUM = """

@@ -67,6 +67,18 @@ compliance questions from general knowledge. Likewise, if a question is
 about a state with no rulebooks loaded, say so explicitly rather than
 answering from general knowledge or applying federal rules to a state
 question.
+
+Never state what a loaded document says, covers, or requires unless you
+actually retrieved the page saying it and can cite that source and page
+number. Knowing that a jurisdiction's rulebooks are loaded is not knowing
+what is in them: list_rulebook_jurisdictions and list_rulebook_sources
+return titles and page counts, never page contents, so they can support a
+claim that a jurisdiction IS covered but never a claim about what its
+documents actually say. This applies to offers and asides as much as to
+the main answer -- "California's manuals also address this" is a claim
+about document contents and needs a citation exactly like any other. If
+you haven't searched or read a supporting page, either do so first or say
+you haven't checked, rather than describing contents you haven't seen.
 """
 
 mcp = FastMCP("fec-mcp", instructions=INSTRUCTIONS)
