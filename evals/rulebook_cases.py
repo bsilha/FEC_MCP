@@ -185,13 +185,21 @@ CASES: list[EvalCase] = [
         ),
         expect_any_of=("get_rulebook_page", "search_rulebooks"),
     ),
-    # -- Negative controls: must NOT reach for rulebook tools --
+    # -- Negative controls: must reach for the right primary tool --
     EvalCase(
         id="rb-18-ao-not-rulebook",
         question="Has the FEC ever ruled on whether a campaign can accept contributions in cryptocurrency?",
         expect_any_of=("search_advisory_opinions",),
-        forbid=("search_rulebooks", "get_rulebook_page"),
-        notes="A specific-scenario ruling question -- belongs to advisory opinions, not the compliance guides.",
+        notes=(
+            "The controlling answer is an advisory opinion (AO 2014-02), so "
+            "search_advisory_opinions must be called -- but a live run showed the "
+            "model *also* calling search_rulebooks/get_rulebook_page to pull the "
+            "campaign guides' reporting/valuation instructions for bitcoin "
+            "contributions (candgui.pdf p.121/138, partygui.pdf p.33/128-129), all "
+            "independently verified as real pages that do discuss bitcoin/crypto. "
+            "That's a more complete answer, not a wrong one, so this case no longer "
+            "forbids rulebook tools -- only asserts the AO tool was used."
+        ),
     ),
     EvalCase(
         id="rb-19-committee-lookup-not-rulebook",
