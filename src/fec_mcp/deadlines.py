@@ -73,6 +73,12 @@ class ReportFamily(str, Enum):
     PRE_PRIMARY = "pre_primary"
     PRE_GENERAL = "pre_general"
     POST_GENERAL = "post_general"
+    # Runoff reports, which only exist in states that hold runoffs and only
+    # when one is actually held. Pre- and post-runoff are deliberately one
+    # family: the lifecycle statuses here can't tell "lost the primary
+    # outright" from "lost it in a runoff", and splitting them would imply a
+    # precision this model doesn't have.
+    RUNOFF = "runoff"
 
 
 # Which report families are in play for each status.
@@ -85,15 +91,21 @@ class ReportFamily(str, Enum):
 _FAMILIES_BY_STATUS: dict[CommitteeStatus, frozenset[ReportFamily]] = {
     # Primary hasn't happened yet, so the general is still hypothetical --
     # don't surface pre/post-general deadlines the committee may never owe.
-    CommitteeStatus.IN_PRIMARY: frozenset({ReportFamily.REGULAR, ReportFamily.PRE_PRIMARY}),
+    CommitteeStatus.IN_PRIMARY: frozenset(
+        {ReportFamily.REGULAR, ReportFamily.PRE_PRIMARY, ReportFamily.RUNOFF}
+    ),
     # Advanced to the general: pre-primary is behind them, pre/post-general
-    # now apply.
+    # now apply. RUNOFF stays in scope because in runoff states the
+    # nomination is often won *in* the runoff, so its report is still owed.
     CommitteeStatus.WON_PRIMARY: frozenset(
-        {ReportFamily.REGULAR, ReportFamily.PRE_GENERAL, ReportFamily.POST_GENERAL}
+        {ReportFamily.REGULAR, ReportFamily.PRE_GENERAL, ReportFamily.POST_GENERAL,
+         ReportFamily.RUNOFF}
     ),
     # Eliminated -- no general-election reports at all, but regular
-    # reporting continues.
-    CommitteeStatus.LOST_PRIMARY: frozenset({ReportFamily.REGULAR}),
+    # reporting continues. RUNOFF is included because a candidate who lost
+    # *in* a runoff still owes that runoff's report, and these statuses
+    # can't distinguish that from losing the primary outright.
+    CommitteeStatus.LOST_PRIMARY: frozenset({ReportFamily.REGULAR, ReportFamily.RUNOFF}),
     # Won the seat. The post-general report is still owed, and regular
     # reporting continues into the next cycle as the officeholder's
     # committee.
@@ -204,7 +216,26 @@ _FAMILY_KEYWORDS: tuple[tuple[str, ReportFamily], ...] = (
     ("pre general", ReportFamily.PRE_GENERAL),
     ("pre-primary", ReportFamily.PRE_PRIMARY),
     ("pre primary", ReportFamily.PRE_PRIMARY),
+    ("pre-runoff", ReportFamily.RUNOFF),
+    ("pre runoff", ReportFamily.RUNOFF),
+    ("post-runoff", ReportFamily.RUNOFF),
+    ("post runoff", ReportFamily.RUNOFF),
 )
+
+# `location` on a deadline that binds every committee nationwide, rather
+# than one state's races. The state-specific rows carry a full state name
+# here instead ("Alabama", "District of Columbia").
+_NATIONAL_LOCATION = "FEC"
+
+
+def is_national(record: dict[str, Any]) -> bool:
+    """Whether this deadline applies nationwide rather than to one state.
+
+    The FEC's own general-election reports (12G/30G) are filed under
+    location "FEC" with no state in the summary, so they must not be
+    race-matched -- doing so would drop them for every committee.
+    """
+    return (record.get("location") or "").strip().upper() == _NATIONAL_LOCATION
 
 
 @dataclass(frozen=True)
@@ -291,16 +322,18 @@ def parse_race(record: dict[str, Any]) -> tuple[str | None, str | None]:
 
 def classify_family(record: dict[str, Any]) -> ReportFamily | None:
     """Which report family a calendar record belongs to, or None if it
-    can't be told from the record's own text."""
-    category_id = record.get("calendar_category_id")
-    try:
-        category_id = int(category_id)
-    except (TypeError, ValueError):
-        category_id = None
+    can't be told from the record's own text.
 
-    if category_id == CATEGORY_QUARTERLY or category_id == CATEGORY_MONTHLY:
-        return ReportFamily.REGULAR
-
+    The report type named in the text WINS over calendar_category_id, and
+    that ordering is load-bearing: the FEC files its national
+    general-election reports ("12G Pre-General Report Due", "30G
+    Post-General Report Due") under category 25, the *Quarterly* category.
+    Trusting the category first classified both as ordinary regular
+    reports, which meant they were shown to every committee regardless of
+    lifecycle -- including one that had already lost its primary and owed
+    neither. Category is only a fallback for records whose text names no
+    specific report type.
+    """
     # `summary` is the record's authoritative short label; `description` is
     # only consulted when the summary says nothing recognizable. Scanning
     # the two concatenated would let a stale or differently-worded
@@ -311,6 +344,15 @@ def classify_family(record: dict[str, Any]) -> ReportFamily | None:
         for keyword, family in _FAMILY_KEYWORDS:
             if keyword in text:
                 return family
+
+    category_id = record.get("calendar_category_id")
+    try:
+        category_id = int(category_id)
+    except (TypeError, ValueError):
+        return None
+
+    if category_id in (CATEGORY_QUARTERLY, CATEGORY_MONTHLY):
+        return ReportFamily.REGULAR
     return None
 
 
@@ -327,12 +369,28 @@ def match_deadline(record: dict[str, Any], profile: CommitteeProfile) -> Deadlin
     try:
         category_id = int(category_id)
     except (TypeError, ValueError):
+        category_id = None
+
+    # Classify by what the record says it is, NOT by its category -- the
+    # national 12G/30G general-election reports live under the Quarterly
+    # category and must not be treated as ordinary regular reports.
+    family = classify_family(record)
+
+    if family is None:
+        if category_id is None:
+            return DeadlineMatch(
+                True, None, "record has no usable calendar_category_id", certain=False
+            )
+        if category_id in (CATEGORY_QUARTERLY, CATEGORY_MONTHLY, CATEGORY_PRE_POST_ELECTION):
+            return DeadlineMatch(
+                True, None, "filing deadline of an unrecognized report type", certain=False
+            )
         return DeadlineMatch(
-            True, None, "record has no usable calendar_category_id", certain=False
+            False, None, f"calendar category {category_id} is not a filing deadline"
         )
 
     # -- Regular reports: driven purely by the committee's filing frequency.
-    if category_id in (CATEGORY_QUARTERLY, CATEGORY_MONTHLY):
+    if family is ReportFamily.REGULAR:
         frequency = (profile.filing_frequency or "").upper()
         if frequency == FREQUENCY_QUARTERLY:
             applies = category_id == CATEGORY_QUARTERLY
@@ -358,61 +416,63 @@ def match_deadline(record: dict[str, Any], profile: CommitteeProfile) -> Deadlin
             certain=False,
         )
 
-    # -- Pre/post-election reports.
-    if category_id == CATEGORY_PRE_POST_ELECTION:
-        family = classify_family(record)
-        if family is None:
-            return DeadlineMatch(
-                True,
-                None,
-                "election-related report of an unrecognized type",
-                certain=False,
-            )
+    # -- Election-driven reports (pre/post-primary, pre/post-general, runoff).
 
-        # Checked BEFORE the lifecycle filter, not after: an unauthorized
-        # committee's pre/post-election obligations depend on whether it
-        # actually spent in connection with THAT race -- committee activity,
-        # which its lifecycle status cannot answer. Applying the status
-        # filter first would rule every election report out for PACs and
-        # party committees (whose status is ONGOING, i.e. regular reports
-        # only), and they do owe pre/post-general reports when they spend in
-        # a race.
-        if not profile.is_authorized:
-            return DeadlineMatch(
-                True,
-                family,
-                "non-candidate committee; depends on whether it had activity in this race",
-                certain=False,
-            )
+    # Checked BEFORE the lifecycle filter, not after: an unauthorized
+    # committee's pre/post-election obligations depend on whether it
+    # actually spent in connection with THAT race -- committee activity,
+    # which its lifecycle status cannot answer. Applying the status filter
+    # first would rule every election report out for PACs and party
+    # committees (whose status is ONGOING, i.e. regular reports only), and
+    # they do owe pre/post-general reports when they spend in a race.
+    if not profile.is_authorized:
+        return DeadlineMatch(
+            True,
+            family,
+            "non-candidate committee; depends on whether it had activity in this race",
+            certain=False,
+        )
 
-        if family not in report_families_for(profile.status):
-            return DeadlineMatch(
-                False,
-                family,
-                f"{family.value} does not apply to a committee that is {profile.status.value}",
-            )
+    if family not in report_families_for(profile.status):
+        return DeadlineMatch(
+            False,
+            family,
+            f"{family.value} does not apply to a committee that is {profile.status.value}",
+        )
 
-        record_state, record_district = parse_race(record)
-        if record_state is None:
+    # A nationwide deadline (the FEC's own 12G/30G general-election
+    # reports) has no state to match against -- race-matching it would
+    # drop it for every committee.
+    if is_national(record):
+        if family is ReportFamily.RUNOFF:
             return DeadlineMatch(
-                True, family, "could not determine which race this deadline belongs to",
-                certain=False,
+                True, family, "runoff report, if a runoff is held", certain=False
             )
-        if profile.state is None:
-            return DeadlineMatch(
-                True, family, "committee's race state is unknown", certain=False
-            )
-        if record_state.upper() != profile.state.upper():
-            return DeadlineMatch(False, family, f"different state ({record_state})")
+        return DeadlineMatch(True, family, f"nationwide {family.value} deadline")
 
-        profile_district = _normalize_district(profile.district)
-        if record_district and profile_district and record_district != profile_district:
-            return DeadlineMatch(
-                False, family, f"different district ({record_state}/{record_district})"
-            )
+    record_state, record_district = parse_race(record)
+    if record_state is None:
+        return DeadlineMatch(
+            True, family, "could not determine which race this deadline belongs to",
+            certain=False,
+        )
+    if profile.state is None:
+        return DeadlineMatch(True, family, "committee's race state is unknown", certain=False)
+    if record_state.upper() != profile.state.upper():
+        return DeadlineMatch(False, family, f"different state ({record_state})")
 
-        return DeadlineMatch(True, family, f"{family.value} for {record_state}")
+    profile_district = _normalize_district(profile.district)
+    if record_district and profile_district and record_district != profile_district:
+        return DeadlineMatch(
+            False, family, f"different district ({record_state}/{record_district})"
+        )
 
-    # Some other calendar category (election dates, IE/EC periods) -- not a
-    # filing deadline this committee owes.
-    return DeadlineMatch(False, None, f"calendar category {category_id} is not a filing deadline")
+    # Runoff reports are conditional even once the state matches -- the FEC
+    # publishes them for every runoff state, marked "if runoff held", so a
+    # state match alone can't confirm this committee owes one.
+    if family is ReportFamily.RUNOFF:
+        return DeadlineMatch(
+            True, family, f"runoff report for {record_state}, if a runoff is held", certain=False
+        )
+
+    return DeadlineMatch(True, family, f"{family.value} for {record_state}")

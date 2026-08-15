@@ -51,6 +51,64 @@ MONTHLY_RECORD = {
     "location": None,
 }
 
+# Verbatim from OpenFEC. Note the category: the FEC files its NATIONAL
+# general-election reports under 25, the *Quarterly* category, with
+# location "FEC" rather than a state. Classifying these by category made
+# them ordinary regular reports, which are owed in every lifecycle status
+# -- so a committee that had already lost its primary was shown both.
+NATIONAL_PRE_GENERAL = {
+    "all_day": True,
+    "calendar_category_id": 25,
+    "category": "Quarterly",
+    "description": (
+        "The 12-day Pre-General Report due for all general election candidates, "
+        "many quarterly-filing PACs and parties, and all monthly filers."
+    ),
+    "event_id": 8270,
+    "location": "FEC",
+    "start_date": "2026-10-22",
+    "state": None,
+    "summary": "12G Pre-General Report Due",
+}
+
+NATIONAL_POST_GENERAL = {
+    "all_day": True,
+    "calendar_category_id": 25,
+    "category": "Quarterly",
+    "description": "30G Post-General Report Due",
+    "event_id": 8272,
+    "location": "FEC",
+    "start_date": "2026-12-03",
+    "state": None,
+    "summary": "30G Post-General Report Due",
+}
+
+# Verbatim: a state-level pre-primary row. Unlike the special-election
+# record above these carry no district segment at all.
+STATE_PRE_PRIMARY = {
+    "all_day": True,
+    "calendar_category_id": 27,
+    "category": "Pre and Post-Elections",
+    "description": "New York Pre-Primary Report due",
+    "event_id": 8382,
+    "location": "New York",
+    "start_date": "2026-06-11",
+    "state": None,
+    "summary": "NY Pre-Primary Report Due",
+}
+
+STATE_PRE_RUNOFF = {
+    "all_day": True,
+    "calendar_category_id": 27,
+    "category": "Pre and Post-Elections",
+    "description": "Georgia Pre-Runoff Report due (if runoff held)",
+    "event_id": 8378,
+    "location": "Georgia",
+    "start_date": "2026-06-04",
+    "state": None,
+    "summary": "GA Pre-Runoff Report Due",
+}
+
 
 def profile(**overrides) -> CommitteeProfile:
     base = dict(
@@ -117,6 +175,88 @@ def test_classify_family_does_not_confuse_post_general_with_pre_general():
 def test_classify_family_returns_none_for_an_unrecognized_report_type():
     odd = dict(REAL_POST_GENERAL, summary="TN/07 Something Unusual Due", description="")
     assert classify_family(odd) is None
+
+
+# -- the national general-election reports filed under the Quarterly category
+
+
+def test_national_general_election_reports_are_not_classified_as_regular():
+    """Regression guard for the bug this cost the most: these live under
+    calendar_category_id 25 ("Quarterly"), so trusting the category made
+    them regular reports -- which every committee owes in every status."""
+    assert classify_family(NATIONAL_PRE_GENERAL) is ReportFamily.PRE_GENERAL
+    assert classify_family(NATIONAL_POST_GENERAL) is ReportFamily.POST_GENERAL
+
+
+def test_committee_that_lost_its_primary_owes_neither_national_general_report():
+    """The headline promise of the whole feature: lose the primary, and the
+    general-election deadlines drop off. This failed before the fix."""
+    lost = profile(status=CommitteeStatus.LOST_PRIMARY)
+    for record in (NATIONAL_PRE_GENERAL, NATIONAL_POST_GENERAL):
+        result = match_deadline(record, lost)
+        assert not result.applies, f"{record['summary']} should not apply after a primary loss"
+
+
+def test_committee_that_won_its_primary_owes_both_national_general_reports():
+    won = profile(status=CommitteeStatus.WON_PRIMARY)
+    for record in (NATIONAL_PRE_GENERAL, NATIONAL_POST_GENERAL):
+        result = match_deadline(record, won)
+        assert result.applies
+        assert result.certain
+
+
+def test_national_deadlines_are_not_filtered_out_by_race_matching():
+    """location is "FEC", not a state -- race-matching a nationwide
+    deadline would drop it for every committee in the country."""
+    won_elsewhere = profile(status=CommitteeStatus.WON_PRIMARY, state="AK", district="AL")
+    assert match_deadline(NATIONAL_PRE_GENERAL, won_elsewhere).applies
+
+
+def test_national_general_reports_still_respect_filing_frequency_independence():
+    """The 12G/30G bind quarterly and monthly filers alike, so filing
+    frequency must not gate them the way regular reports are gated."""
+    monthly = profile(status=CommitteeStatus.WON_PRIMARY, filing_frequency="M")
+    assert match_deadline(NATIONAL_PRE_GENERAL, monthly).applies
+
+
+# -- state-level rows and runoffs -------------------------------------------
+
+
+def test_state_pre_primary_matches_a_committee_in_that_state():
+    ny = profile(status=CommitteeStatus.IN_PRIMARY, state="NY", district="12")
+    result = match_deadline(STATE_PRE_PRIMARY, ny)
+    assert result.applies
+    assert result.family is ReportFamily.PRE_PRIMARY
+
+
+def test_state_pre_primary_has_no_district_so_it_applies_to_any_district():
+    """Regular-cycle state rows carry no district segment; only special
+    elections do. Every district in the state owes the report."""
+    for district in ("01", "12", "26"):
+        assert match_deadline(
+            STATE_PRE_PRIMARY, profile(status=CommitteeStatus.IN_PRIMARY, state="NY", district=district)
+        ).applies
+
+
+def test_state_pre_primary_does_not_apply_to_another_state():
+    ca = profile(status=CommitteeStatus.IN_PRIMARY, state="CA", district="12")
+    assert not match_deadline(STATE_PRE_PRIMARY, ca).applies
+
+
+def test_runoff_reports_are_flagged_conditional_because_a_runoff_may_not_be_held():
+    """The FEC publishes these for every runoff state marked "if runoff
+    held", so a state match alone can't confirm the committee owes one."""
+    ga = profile(status=CommitteeStatus.IN_PRIMARY, state="GA", district="07")
+    result = match_deadline(STATE_PRE_RUNOFF, ga)
+    assert result.applies
+    assert result.family is ReportFamily.RUNOFF
+    assert not result.certain
+
+
+def test_runoff_reports_survive_a_primary_loss():
+    """A candidate who lost in the runoff still owes its report."""
+    ga = profile(status=CommitteeStatus.LOST_PRIMARY, state="GA", district="07")
+    assert match_deadline(STATE_PRE_RUNOFF, ga).applies
 
 
 # -- regular reports vs filing frequency ------------------------------------
@@ -236,7 +376,27 @@ def test_election_date_records_are_not_treated_as_filing_deadlines():
 
 
 @pytest.mark.parametrize("bad", [None, "", "not-a-number"])
-def test_record_without_a_usable_category_stays_visible_but_uncertain(bad):
-    result = match_deadline(dict(REAL_POST_GENERAL, calendar_category_id=bad), profile())
+def test_record_that_is_unusable_in_every_field_stays_visible_but_uncertain(bad):
+    """Neither the category nor the text says what this report is, so it
+    can't be classified -- and must therefore stay visible."""
+    unusable = {
+        "calendar_category_id": bad,
+        "summary": "Report Due",
+        "description": "",
+        "location": "FEC",
+        "state": None,
+    }
+    result = match_deadline(unusable, profile())
     assert result.applies
     assert not result.certain
+
+
+@pytest.mark.parametrize("bad", [None, "", "not-a-number"])
+def test_unusable_category_still_classifies_from_unambiguous_text(bad):
+    """A broken category doesn't matter when the summary names the report
+    outright -- classify confidently rather than flagging uncertainty the
+    record doesn't actually have."""
+    result = match_deadline(dict(REAL_POST_GENERAL, calendar_category_id=bad), profile())
+    assert result.applies
+    assert result.family is ReportFamily.POST_GENERAL
+    assert result.certain

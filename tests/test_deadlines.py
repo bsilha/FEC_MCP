@@ -43,7 +43,14 @@ def test_losing_the_primary_drops_general_election_reports():
     families = report_families_for(CommitteeStatus.LOST_PRIMARY)
     assert ReportFamily.PRE_GENERAL not in families
     assert ReportFamily.POST_GENERAL not in families
-    assert families == {ReportFamily.REGULAR}
+    assert ReportFamily.PRE_PRIMARY not in families
+
+
+def test_losing_the_primary_keeps_runoff_reports_in_scope():
+    """A candidate who lost *in* a runoff still owes that runoff's report,
+    and these statuses can't tell that apart from losing the primary
+    outright -- so runoff stays in scope rather than being dropped."""
+    assert ReportFamily.RUNOFF in report_families_for(CommitteeStatus.LOST_PRIMARY)
 
 
 def test_winning_the_primary_adds_general_election_reports():
@@ -90,8 +97,11 @@ def test_non_candidate_committee_has_no_election_driven_reports_from_status():
 def test_is_election_driven_flags_only_statuses_with_election_reports():
     assert is_election_driven(CommitteeStatus.IN_PRIMARY)
     assert is_election_driven(CommitteeStatus.WON_PRIMARY)
-    assert not is_election_driven(CommitteeStatus.LOST_PRIMARY)
+    # Still election-driven after a primary loss: a runoff report may
+    # remain owed.
+    assert is_election_driven(CommitteeStatus.LOST_PRIMARY)
     assert not is_election_driven(CommitteeStatus.TERMINATING)
+    assert not is_election_driven(CommitteeStatus.ONGOING)
 
 
 # -- lifecycle transitions --------------------------------------------------
