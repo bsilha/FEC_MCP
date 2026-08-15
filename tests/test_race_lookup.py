@@ -208,17 +208,63 @@ async def test_unresolved_note_records_every_route_it_tried():
         assert fragment in result.note
 
 
-async def test_a_candidate_without_a_state_is_not_treated_as_resolved():
-    """A record that can't answer the question is not an answer."""
+async def test_slim_linkage_rows_are_hydrated_into_full_candidate_records():
+    """A committee->candidates listing may name the candidate without
+    describing them. That row can't answer the race question itself, but
+    it says exactly which candidate to fetch -- and /candidate/{id}/ is
+    path-scoped, so hydrating stays within the no-unverified-filters rule."""
     client = FakeClient(
-        committee_candidates={"results": [{"candidate_id": "X", "name": "NO STATE"}]},
-        committee={"results": [{"candidate_ids": ["H2CA18171"]}]},
+        committee_candidates={"results": [{"candidate_id": "H2CA18171", "name": "NO STATE"}]},
         candidate={"results": [CANDIDATE]},
     )
     result = await resolve_committee_race(client, "C00832790")
 
+    assert result.resolved
     assert result.state == "CA"
-    assert result.resolved_via == "committee_record_candidate_ids"
+    assert result.resolved_via == "committee_candidates_endpoint_hydrated"
+
+
+async def test_a_row_with_neither_state_nor_candidate_id_resolves_nothing():
+    """A record that can't answer the question and can't say who to ask
+    is not an answer."""
+    client = FakeClient(
+        committee_candidates={"results": [{"name": "NOTHING USEFUL"}]},
+        committee={"results": [{"candidate_ids": []}]},
+    )
+    result = await resolve_committee_race(client, "C00832790")
+
+    assert not result.resolved
+
+
+async def test_unscoped_pages_are_never_hydrated():
+    """Hydration costs one request per row, so the plausibility guard has
+    to run first -- an unscoped page must not become 20 lookups."""
+    client = FakeClient(
+        committee_candidates={"results": [dict(c, state=None) for c in UNSCOPED_RESULT_PAGE]},
+        committee={"results": [{"candidate_ids": []}]},
+    )
+    result = await resolve_committee_race(client, "C00832790")
+
+    assert not result.resolved
+    assert client.calls.count("get_candidate") == 0
+
+
+async def test_diagnostic_distinguishes_empty_results_from_stateless_rows():
+    """These have different causes and different fixes, so the note must
+    not collapse them into one message."""
+    empty = FakeClient(
+        committee_candidates={"results": []},
+        committee={"results": [{"candidate_ids": []}]},
+    )
+    assert "returned no results" in (await resolve_committee_race(empty, "C1")).note
+
+    stateless = FakeClient(
+        committee_candidates={"results": [{"name": "X", "committee_id": "C1"}]},
+        committee={"results": [{"candidate_ids": []}]},
+    )
+    note = (await resolve_committee_race(stateless, "C1")).note
+    assert "none carrying a state" in note
+    assert "keys present" in note
 
 
 async def test_multiple_linked_candidates_picks_the_most_recent():

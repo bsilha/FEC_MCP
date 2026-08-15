@@ -119,15 +119,28 @@ def _pick(candidates: list[dict[str, Any]], via: str) -> tuple[RaceResolution | 
     produced nothing usable, and reason explains why for the caller's
     diagnostic note.
     """
-    usable = [c for c in candidates if c.get("state")]
-    if not usable:
-        return None, "returned no candidate with a state"
+    if not candidates:
+        return None, "returned no results"
 
-    if len(usable) > _MAX_PLAUSIBLE_LINKED_CANDIDATES:
+    if len(candidates) > _MAX_PLAUSIBLE_LINKED_CANDIDATES:
         return None, (
-            f"returned {len(usable)} candidates, far more than a committee can "
+            f"returned {len(candidates)} candidates, far more than a committee can "
             "plausibly be linked to -- treating the result as unscoped rather "
             "than resolving to one of them"
+        )
+
+    usable = [c for c in candidates if c.get("state")]
+    if not usable:
+        # Distinguished from "no results" on purpose: rows that exist but
+        # carry no state usually mean the endpoint returns slim linkage
+        # records rather than full candidate records, which is a different
+        # problem with a different fix (fetch the detail) than an empty
+        # result. Listing the keys makes the next run self-diagnosing
+        # instead of needing another probe.
+        keys = sorted({k for c in candidates for k in c})[:12]
+        return None, (
+            f"returned {len(candidates)} record(s), none carrying a state "
+            f"(keys present: {', '.join(keys) or 'none'})"
         )
 
     ordered = sorted(usable, key=_cycle_key, reverse=True)
@@ -157,6 +170,35 @@ def _pick(candidates: list[dict[str, Any]], via: str) -> tuple[RaceResolution | 
     return RaceResolution(**{**resolution.__dict__, "alternatives": others}), "resolved"
 
 
+async def _hydrate(client: Any, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Turn slim linkage rows into full candidate records.
+
+    A committee -> candidates listing may return only the association
+    (candidate_id, committee_id) rather than the candidate's own
+    state/district/office. Those rows can't answer the race question on
+    their own but do name exactly which candidate to look up, which is
+    still a path-scoped resolution -- /candidate/{id}/ can only return the
+    candidate whose id was asked for.
+
+    Callers must apply the plausibility guard BEFORE calling this, so an
+    unscoped result page can't turn into one request per bogus row.
+    """
+    hydrated: list[dict[str, Any]] = []
+    for record in records:
+        if record.get("state"):
+            hydrated.append(record)
+            continue
+        candidate_id = record.get("candidate_id")
+        if not candidate_id:
+            continue
+        try:
+            detail = await client.get_candidate(candidate_id)
+        except (OpenFECError, AttributeError, TypeError):
+            continue
+        hydrated.extend(detail.get("results") or [])
+    return hydrated
+
+
 async def resolve_committee_race(
     client: Any,
     committee_id: str,
@@ -182,9 +224,21 @@ async def resolve_committee_race(
     # a query-parameter filter silently can.
     try:
         data = await client.get_committee_candidates(committee_id)
-        picked, reason = _pick(data.get("results") or [], "committee_candidates_endpoint")
+        results = data.get("results") or []
+        picked, reason = _pick(results, "committee_candidates_endpoint")
         if picked:
             return picked
+
+        # The rows may be slim linkage records naming a candidate without
+        # describing them. Only worth a second pass when the guard already
+        # accepted the result set as plausibly scoped.
+        if results and "unscoped" not in reason and len(results) <= _MAX_PLAUSIBLE_LINKED_CANDIDATES:
+            hydrated = await _hydrate(client, results)
+            picked, hydrated_reason = _pick(hydrated, "committee_candidates_endpoint_hydrated")
+            if picked:
+                return picked
+            reason = f"{reason}; after fetching each candidate: {hydrated_reason}"
+
         attempts.append(f"/committee/{{id}}/candidates/ {reason}")
     except (OpenFECError, AttributeError, TypeError) as exc:
         attempts.append(f"/committee/{{id}}/candidates/ failed: {exc}")
