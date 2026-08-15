@@ -30,6 +30,7 @@ from anthropic import Anthropic, beta_tool
 
 from fec_mcp import server
 from fec_mcp.rulebook_index import DEFAULT_RULEBOOKS_DIR
+from fec_mcp.states import US_STATE_NAMES
 
 MODEL = "claude-opus-5"
 MAX_TOKENS = 4096
@@ -121,21 +122,6 @@ BRAND_TEAL = "#3FC7C9"  # AO status badges -- matches the chart's second data se
 # two-letter USPS codes (e.g. "ca") -- fine for internal filtering, but per
 # explicit user feedback a sidebar heading reading "CA" is less scannable
 # than "California" once there's more than one or two states loaded.
-US_STATE_NAMES = {
-    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
-    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
-    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
-    "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
-    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri",
-    "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey",
-    "NM": "New Mexico", "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
-    "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
-    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont",
-    "VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
-    "DC": "District of Columbia",
-}
-
-
 def _jurisdiction_label(jurisdiction: str) -> str:
     """Sidebar heading text for a jurisdiction code, e.g. "ca" -> "California".
 
