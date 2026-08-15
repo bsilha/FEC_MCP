@@ -131,6 +131,42 @@ class OpenFECClient:
     async def get_candidate(self, candidate_id: str) -> dict[str, Any]:
         return await self._get(f"/candidate/{candidate_id}/")
 
+    async def list_candidates(
+        self,
+        committee_id: str | None = None,
+        office: str | None = None,
+        state: str | None = None,
+        cycle: int | None = None,
+        candidate_status: str | None = None,
+        per_page: int = 20,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """Filterable candidate listing -- distinct from search_candidates.
+
+        search_candidates hits /candidates/search/, which is a fuzzy
+        name-matching endpoint and does not accept a committee_id filter.
+        This hits plain /candidates/, which does, and is the cheapest way
+        to get from a committee to the candidate whose race it belongs to.
+        """
+        return await self._get(
+            "/candidates/",
+            {
+                "committee_id": committee_id,
+                "office": office,
+                "state": state,
+                "cycle": cycle,
+                "candidate_status": candidate_status,
+                "per_page": per_page,
+                "page": page,
+            },
+        )
+
+    async def get_committee_candidates(self, committee_id: str) -> dict[str, Any]:
+        """Candidates associated with one committee, via the dedicated
+        sub-resource. Used as a fallback when the committee_id filter on
+        /candidates/ returns nothing."""
+        return await self._get(f"/committee/{committee_id}/candidates/")
+
     async def get_candidate_totals(self, candidate_id: str, cycle: int | None = None) -> dict[str, Any]:
         return await self._get(f"/candidate/{candidate_id}/totals/", {"cycle": cycle})
 
