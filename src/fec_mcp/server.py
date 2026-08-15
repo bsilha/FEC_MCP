@@ -23,11 +23,14 @@ research aids and cited back to their source (PDF page or OpenFEC record).
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .deadlines import CommitteeProfile, CommitteeStatus, match_deadline
 from .openfec_client import OpenFECClient, OpenFECError
+from .race_lookup import resolve_committee_race
 from .rulebook_index import RulebookIndex
 
 INSTRUCTIONS = """\
@@ -736,6 +739,191 @@ async def get_advisory_opinion(ao_no: str) -> dict[str, Any]:
     except OpenFECError as exc:
         return {"error": str(exc)}
     return {"docs": data.get("docs", [])}
+
+
+async def _fetch_reporting_calendar(
+    start: date, end: date, max_pages: int = 4
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Every published filing deadline in a date window.
+
+    Paginates rather than taking the first page: the window a user asks
+    about routinely holds more deadlines than one page returns, and a
+    silently truncated calendar would look identical to a committee simply
+    having fewer obligations. Returns (records, truncation_warning).
+    """
+    client = await _client()
+    records: list[dict[str, Any]] = []
+    page = 1
+    while page <= max_pages:
+        data = await client.get_calendar_dates(
+            category="reporting-dates",
+            min_start_date=start.isoformat(),
+            max_start_date=end.isoformat(),
+            per_page=100,
+            page=page,
+        )
+        records.extend(data.get("results") or [])
+        pagination = data.get("pagination") or {}
+        if page >= (pagination.get("pages") or 1):
+            return records, None
+        page += 1
+
+    return records, (
+        f"Only the first {max_pages} pages of the FEC calendar were read; "
+        "some deadlines in this window may be missing. Narrow months_ahead "
+        "for a complete list."
+    )
+
+
+@mcp.tool()
+async def get_committee_deadlines(
+    committee_id: str,
+    status: str,
+    state: str | None = None,
+    district: str | None = None,
+    months_ahead: int = 12,
+) -> dict[str, Any]:
+    """Which FEC filing deadlines actually bind one committee, and when.
+
+    Filters the FEC's own published calendar down to the deadlines a
+    specific committee owes. Dates are never computed here -- they come
+    from the FEC -- so this cannot drift from the official calendar.
+
+    Which deadlines apply depends on the committee's lifecycle, which is
+    why `status` is required rather than defaulted: a committee that lost
+    its primary owes no general-election reports, and guessing that wrong
+    silently produces a wrong deadline set.
+
+    Args:
+        committee_id: FEC committee ID, e.g. "C00614701".
+        status: Where the committee is in its election lifecycle. One of:
+            "in_primary", "won_primary", "lost_primary", "won_general",
+            "lost_general", "terminating", or "ongoing" for a PAC or party
+            committee that has no election of its own to win or lose.
+        state: Two-letter state of the FEDERAL race this committee's
+            candidate is in, e.g. "MI" (this is where the federal race is,
+            not a state campaign-finance jurisdiction). Needed for
+            state-timed deadlines like pre-primary reports, since federal
+            primaries fall on different dates in different states. OpenFEC
+            often cannot report a committee's candidate, so pass this when
+            you know it -- an explicit value is always used in preference
+            to a looked-up one.
+        district: District of that race for a House seat, e.g. "04".
+        months_ahead: How far forward to look, default 12 months.
+
+    Returns the deadlines that apply (each with its date, what it is, and
+    whether it is certain), those ruled out and why, and the race used --
+    which should be confirmed before relying on the state-specific ones.
+    """
+    try:
+        committee_status = CommitteeStatus(status)
+    except ValueError:
+        return {
+            "error": f"Unknown status {status!r}.",
+            "valid_statuses": [s.value for s in CommitteeStatus],
+        }
+
+    try:
+        data = await (await _client()).get_committee(committee_id)
+    except OpenFECError as exc:
+        return {"error": str(exc)}
+
+    results = data.get("results") or []
+    if not results:
+        return {"error": f"No committee found with ID {committee_id!r}."}
+    record = results[0]
+
+    # An explicitly-passed race always wins over a looked-up one: the
+    # caller knows their own client's race, and OpenFEC frequently cannot
+    # report it at all.
+    race_note = "state supplied by the caller"
+    race_source = "caller"
+    if state is None:
+        resolution = await resolve_committee_race(
+            await _client(), committee_id, committee_record=record
+        )
+        state, district = resolution.state, resolution.district
+        race_note, race_source = resolution.note, resolution.resolved_via
+
+    profile = CommitteeProfile(
+        committee_id=committee_id,
+        name=record.get("name") or committee_id,
+        designation=record.get("designation") or "",
+        filing_frequency=record.get("filing_frequency") or "",
+        status=committee_status,
+        state=state,
+        district=district,
+        office=record.get("committee_type"),
+    )
+
+    today = date.today()
+    try:
+        calendar, truncation = await _fetch_reporting_calendar(
+            today, today + timedelta(days=31 * max(1, months_ahead))
+        )
+    except OpenFECError as exc:
+        return {"error": str(exc)}
+
+    applies: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for entry in calendar:
+        decision = match_deadline(entry, profile)
+        row = {
+            "date": entry.get("start_date"),
+            "deadline": entry.get("summary"),
+            "description": entry.get("description"),
+            "report_type": decision.family.value if decision.family else None,
+            "reason": decision.reason,
+            "url": entry.get("url"),
+        }
+        if decision.applies:
+            applies.append({**row, "certain": decision.certain})
+        else:
+            excluded.append(row)
+
+    applies.sort(key=lambda r: r["date"] or "")
+
+    unverified = [r for r in applies if not r["certain"]]
+    warnings = []
+    if truncation:
+        warnings.append(truncation)
+    if profile.is_authorized and state is None:
+        warnings.append(
+            "This committee's race is unknown, so state-timed deadlines "
+            "(pre-primary, runoff) could not be checked. Pass `state` "
+            "(and `district` for a House seat) to include them."
+        )
+    if unverified:
+        warnings.append(
+            f"{len(unverified)} deadline(s) are shown but unverified -- they could "
+            "not be confidently ruled in or out, and are listed rather than hidden "
+            "so a real obligation is never silently dropped. Check each one."
+        )
+
+    return {
+        "committee": {
+            "committee_id": committee_id,
+            "name": profile.name,
+            "designation": record.get("designation"),
+            "filing_frequency": record.get("filing_frequency"),
+            "is_candidate_committee": profile.is_authorized,
+        },
+        "status": committee_status.value,
+        "race": {
+            "state": state,
+            "district": district,
+            "source": race_source,
+            "note": race_note,
+            "confirm": (
+                "Confirm this is the correct race before relying on the "
+                "state-specific deadlines below."
+            ),
+        },
+        "window": {"from": today.isoformat(), "to": (today + timedelta(days=31 * months_ahead)).isoformat()},
+        "deadlines": applies,
+        "excluded": excluded,
+        "warnings": warnings,
+    }
 
 
 def main() -> None:
