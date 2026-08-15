@@ -133,7 +133,6 @@ class OpenFECClient:
 
     async def list_candidates(
         self,
-        committee_id: str | None = None,
         office: str | None = None,
         state: str | None = None,
         cycle: int | None = None,
@@ -141,17 +140,21 @@ class OpenFECClient:
         per_page: int = 20,
         page: int = 1,
     ) -> dict[str, Any]:
-        """Filterable candidate listing -- distinct from search_candidates.
+        """Filterable candidate listing -- distinct from search_candidates,
+        which hits the fuzzy name-matching /candidates/search/ endpoint.
 
-        search_candidates hits /candidates/search/, which is a fuzzy
-        name-matching endpoint and does not accept a committee_id filter.
-        This hits plain /candidates/, which does, and is the cheapest way
-        to get from a committee to the candidate whose race it belongs to.
+        Deliberately does NOT take committee_id. A live check showed
+        /candidates/ silently IGNORES an unsupported committee_id filter
+        and returns the first alphabetical page of every candidate in the
+        database, rather than erroring -- which read as "20 candidates are
+        linked to this committee" and resolved a Michigan committee to a
+        randomly-chosen race. Use get_committee_candidates() for the
+        committee -> candidate direction, which is path-scoped and cannot
+        return unrelated records.
         """
         return await self._get(
             "/candidates/",
             {
-                "committee_id": committee_id,
                 "office": office,
                 "state": state,
                 "cycle": cycle,
@@ -162,9 +165,12 @@ class OpenFECClient:
         )
 
     async def get_committee_candidates(self, committee_id: str) -> dict[str, Any]:
-        """Candidates associated with one committee, via the dedicated
-        sub-resource. Used as a fallback when the committee_id filter on
-        /candidates/ returns nothing."""
+        """Candidates associated with one committee.
+
+        Path-scoped rather than filtered by query parameter, so unlike
+        /candidates/?committee_id= it cannot quietly return candidates
+        belonging to other committees.
+        """
         return await self._get(f"/committee/{committee_id}/candidates/")
 
     async def get_candidate_totals(self, candidate_id: str, cycle: int | None = None) -> dict[str, Any]:

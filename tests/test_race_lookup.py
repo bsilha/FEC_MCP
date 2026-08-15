@@ -34,13 +34,35 @@ OLDER_CANDIDATE = {
 }
 
 
+# The shape of a real unscoped result page: alphabetically-ordered
+# candidates from unrelated states, which is what /candidates/ served when
+# handed a committee_id filter it does not support. Reduced from 20 rows to
+# 8; the count only has to exceed the plausibility guard.
+UNSCOPED_RESULT_PAGE = [
+    {"candidate_id": "H6MI04188", "name": "AARON, RICHARD", "state": "MI",
+     "district": "04", "office": "H", "election_years": [2026]},
+    {"candidate_id": "H4OR05312", "name": "AASEN, ANDREW J", "state": "OR",
+     "district": "05", "office": "H", "election_years": [2024]},
+    {"candidate_id": "H2CA30291", "name": "AAZAMI, SHERVIN", "state": "CA",
+     "district": "32", "office": "H", "election_years": [2022]},
+    {"candidate_id": "H2CO07170", "name": "AADLAND, ERIK", "state": "CO",
+     "district": "07", "office": "H", "election_years": [2022]},
+    {"candidate_id": "H2UT03280", "name": "AALDERS, TIM", "state": "UT",
+     "district": "03", "office": "H", "election_years": [2022]},
+    {"candidate_id": "H0TX22260", "name": "AALOORI, BANGAR REDDY", "state": "TX",
+     "district": "22", "office": "H", "election_years": [2020]},
+    {"candidate_id": "H0FL21102", "name": "AARONS, ADAM", "state": "FL",
+     "district": "21", "office": "H", "election_years": [2020]},
+    {"candidate_id": "H8CO06237", "name": "AARESTAD, DAVID", "state": "CO",
+     "district": "06", "office": "H", "election_years": [2018]},
+]
+
+
 class FakeClient:
     """Records which routes were called so tests can assert the chain
     stopped where it should, rather than only checking the final answer."""
 
-    def __init__(self, *, list_candidates=None, committee_candidates=None,
-                 committee=None, candidate=None):
-        self._list_candidates = list_candidates
+    def __init__(self, *, committee_candidates=None, committee=None, candidate=None):
         self._committee_candidates = committee_candidates
         self._committee = committee
         self._candidate = candidate
@@ -54,9 +76,6 @@ class FakeClient:
             raise value
         return value
 
-    async def list_candidates(self, **kwargs):
-        return await self._serve("list_candidates", self._list_candidates)
-
     async def get_committee_candidates(self, committee_id):
         return await self._serve("committee_candidates", self._committee_candidates)
 
@@ -68,42 +87,17 @@ class FakeClient:
 
 
 async def test_route_1_resolves_and_short_circuits_the_rest():
-    client = FakeClient(list_candidates={"results": [CANDIDATE]})
+    client = FakeClient(committee_candidates={"results": [CANDIDATE]})
     result = await resolve_committee_race(client, "C00832790")
 
     assert result.resolved
     assert (result.state, result.district, result.office) == ("CA", "18", "H")
-    assert result.resolved_via == "candidates_committee_id_filter"
-    assert client.calls == ["list_candidates"], "later routes must not run once one succeeds"
-
-
-async def test_falls_through_to_route_2_when_route_1_is_empty():
-    client = FakeClient(
-        list_candidates={"results": []},
-        committee_candidates={"results": [CANDIDATE]},
-    )
-    result = await resolve_committee_race(client, "C00832790")
-
-    assert result.resolved
     assert result.resolved_via == "committee_candidates_endpoint"
+    assert client.calls == ["committee_candidates"], "later routes must not run once one succeeds"
 
 
-async def test_falls_through_to_route_2_when_route_1_errors():
-    """One endpoint being unavailable must not abort the whole chain --
-    that's the entire reason there is a chain."""
+async def test_falls_through_when_route_1_is_empty():
     client = FakeClient(
-        list_candidates=None,  # raises
-        committee_candidates={"results": [CANDIDATE]},
-    )
-    result = await resolve_committee_race(client, "C00832790")
-
-    assert result.resolved
-    assert result.resolved_via == "committee_candidates_endpoint"
-
-
-async def test_falls_through_to_route_3_candidate_ids_on_the_committee():
-    client = FakeClient(
-        list_candidates={"results": []},
         committee_candidates={"results": []},
         committee={"results": [{"candidate_ids": ["H2CA18171"]}]},
         candidate={"results": [CANDIDATE]},
@@ -114,10 +108,23 @@ async def test_falls_through_to_route_3_candidate_ids_on_the_committee():
     assert result.resolved_via == "committee_record_candidate_ids"
 
 
-async def test_route_3_uses_a_committee_record_already_in_hand():
+async def test_falls_through_when_route_1_errors():
+    """One endpoint being unavailable must not abort the whole chain --
+    that's the entire reason there is a chain."""
+    client = FakeClient(
+        committee_candidates=None,  # raises
+        committee={"results": [{"candidate_ids": ["H2CA18171"]}]},
+        candidate={"results": [CANDIDATE]},
+    )
+    result = await resolve_committee_race(client, "C00832790")
+
+    assert result.resolved
+    assert result.resolved_via == "committee_record_candidate_ids"
+
+
+async def test_route_2_uses_a_committee_record_already_in_hand():
     """Avoids a redundant request when the caller already fetched it."""
     client = FakeClient(
-        list_candidates={"results": []},
         committee_candidates={"results": []},
         candidate={"results": [CANDIDATE]},
     )
@@ -129,11 +136,57 @@ async def test_route_3_uses_a_committee_record_already_in_hand():
     assert "get_committee" not in client.calls
 
 
+# -- the unscoped-result-page failure ---------------------------------------
+
+
+async def test_an_unscoped_result_page_is_rejected_rather_than_resolved():
+    """Regression guard for the worst bug in this feature so far.
+
+    /candidates/?committee_id= silently ignored the filter and returned the
+    first alphabetical page of every candidate in the database. The chain
+    read that as a linked set, picked the most recent, and confidently
+    reported a race belonging to no committee in particular. No exception
+    was raised anywhere -- which is why the guard is a plausibility check
+    on the result, not error handling.
+    """
+    client = FakeClient(
+        committee_candidates={"results": UNSCOPED_RESULT_PAGE},
+        committee={"results": [{"candidate_ids": []}]},
+    )
+    result = await resolve_committee_race(client, "C00832790")
+
+    assert not result.resolved, "an unscoped page must never resolve to a race"
+    assert result.state is None
+
+
+async def test_unscoped_page_rejection_is_explained_in_the_note():
+    client = FakeClient(
+        committee_candidates={"results": UNSCOPED_RESULT_PAGE},
+        committee={"results": [{"candidate_ids": []}]},
+    )
+    result = await resolve_committee_race(client, "C00832790")
+
+    assert "unscoped" in result.note
+    assert str(len(UNSCOPED_RESULT_PAGE)) in result.note
+
+
+async def test_a_plausible_multi_candidate_set_still_resolves():
+    """The guard must not reject legitimately-linked sets -- a committee
+    reused across cycles or seats genuinely has a few."""
+    client = FakeClient(committee_candidates={"results": [OLDER_CANDIDATE, CANDIDATE]})
+    result = await resolve_committee_race(client, "C00832790")
+
+    assert result.resolved
+    assert result.candidate_id == "H2CA18171"
+
+
+# -- unresolved handling ----------------------------------------------------
+
+
 async def test_unresolved_when_every_route_comes_up_empty():
     """The observed real-world case: candidate_ids empty on a genuine
     principal campaign committee. Must report honestly, not guess."""
     client = FakeClient(
-        list_candidates={"results": []},
         committee_candidates={"results": []},
         committee={"results": [{"candidate_ids": []}]},
     )
@@ -147,28 +200,29 @@ async def test_unresolved_when_every_route_comes_up_empty():
 
 async def test_unresolved_note_records_every_route_it_tried():
     """So a failure is diagnosable from the tool output alone."""
-    client = FakeClient(list_candidates=None, committee_candidates=None, committee=None)
+    client = FakeClient(committee_candidates=None, committee=None)
     result = await resolve_committee_race(client, "C00832790")
 
     assert not result.resolved
-    for fragment in ("candidates?committee_id=", "/committee/{id}/candidates/", "committee record"):
+    for fragment in ("/committee/{id}/candidates/", "committee record"):
         assert fragment in result.note
 
 
 async def test_a_candidate_without_a_state_is_not_treated_as_resolved():
     """A record that can't answer the question is not an answer."""
     client = FakeClient(
-        list_candidates={"results": [{"candidate_id": "X", "name": "NO STATE"}]},
-        committee_candidates={"results": [CANDIDATE]},
+        committee_candidates={"results": [{"candidate_id": "X", "name": "NO STATE"}]},
+        committee={"results": [{"candidate_ids": ["H2CA18171"]}]},
+        candidate={"results": [CANDIDATE]},
     )
     result = await resolve_committee_race(client, "C00832790")
 
     assert result.state == "CA"
-    assert result.resolved_via == "committee_candidates_endpoint"
+    assert result.resolved_via == "committee_record_candidate_ids"
 
 
 async def test_multiple_linked_candidates_picks_the_most_recent():
-    client = FakeClient(list_candidates={"results": [OLDER_CANDIDATE, CANDIDATE]})
+    client = FakeClient(committee_candidates={"results": [OLDER_CANDIDATE, CANDIDATE]})
     result = await resolve_committee_race(client, "C00832790")
 
     assert result.candidate_id == "H2CA18171"
@@ -177,7 +231,7 @@ async def test_multiple_linked_candidates_picks_the_most_recent():
 
 async def test_multiple_linked_candidates_surfaces_the_alternatives():
     """A choice was made on the user's behalf, so it must be visible."""
-    client = FakeClient(list_candidates={"results": [OLDER_CANDIDATE, CANDIDATE]})
+    client = FakeClient(committee_candidates={"results": [OLDER_CANDIDATE, CANDIDATE]})
     result = await resolve_committee_race(client, "C00832790")
 
     assert len(result.alternatives) == 1
@@ -188,7 +242,7 @@ async def test_blank_district_is_normalized_to_absent():
     """Real statewide/primary rows carry " " rather than null; left as-is
     it would compare as a district and match nothing."""
     statewide = dict(CANDIDATE, district=" ", office="S")
-    client = FakeClient(list_candidates={"results": [statewide]})
+    client = FakeClient(committee_candidates={"results": [statewide]})
     result = await resolve_committee_race(client, "C00832790")
 
     assert result.district is None
@@ -198,7 +252,7 @@ async def test_blank_district_is_normalized_to_absent():
 async def test_every_resolution_asks_for_confirmation():
     """Even a clean resolve: every failure mode here is silent, producing
     a plausible race and therefore plausible wrong deadlines."""
-    client = FakeClient(list_candidates={"results": [CANDIDATE]})
+    client = FakeClient(committee_candidates={"results": [CANDIDATE]})
     result = await resolve_committee_race(client, "C00832790")
     assert result.needs_confirmation
 
@@ -206,8 +260,9 @@ async def test_every_resolution_asks_for_confirmation():
 @pytest.mark.parametrize("payload", [{}, {"results": None}])
 async def test_malformed_payloads_do_not_crash_the_chain(payload):
     client = FakeClient(
-        list_candidates=payload,
-        committee_candidates={"results": [CANDIDATE]},
+        committee_candidates=payload,
+        committee={"results": [{"candidate_ids": ["H2CA18171"]}]},
+        candidate={"results": [CANDIDATE]},
     )
     result = await resolve_committee_race(client, "C00832790")
     assert result.resolved

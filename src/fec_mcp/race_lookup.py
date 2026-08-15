@@ -15,7 +15,23 @@ endpoint and quietly fail whenever it comes back empty, this tries
 several in order and reports which one actually worked, so the dead links
 can be removed once real usage shows which are load-bearing.
 
-Nothing here guesses. When no link resolves, the result says so and the
+Every route here is PATH-scoped, never filtered by query parameter, and
+that is a correctness requirement rather than a style preference. An
+earlier version led with /candidates/?committee_id=, which looked ideal:
+one request, and the candidate record already carries state/district/
+office. A live check against a real Michigan committee returned twenty
+candidates spanning a dozen states, alphabetically ordered -- OpenFEC
+ignores an unsupported query filter and serves the unfiltered first page
+instead of erroring. The chain read that as "20 candidates are linked to
+this committee", picked the most recent by election year, and confidently
+reported a race that had nothing to do with the committee. No exception
+was raised at any point.
+
+So results are never trusted to satisfy a filter that was merely
+requested: a route must be scoped by URL path, and an implausibly large
+result set is treated as evidence the scoping did not happen.
+
+Nothing here guesses. When no route resolves, the result says so and the
 caller asks the user for the state and district instead of proceeding on
 an assumption -- a wrong race silently produces a wrong deadline set,
 which is the failure this whole feature exists to prevent.
@@ -83,22 +99,42 @@ def _from_candidate(candidate: dict[str, Any], via: str, note: str = "") -> Race
     )
 
 
-def _pick(candidates: list[dict[str, Any]], via: str) -> RaceResolution | None:
+# A committee is linked to a handful of candidates at most -- one in the
+# ordinary case, a few for a committee reused across cycles or seats.
+# Anything beyond this is not a linked set: it is an unscoped result page,
+# which is exactly how a Michigan committee once resolved to a random race.
+# The guard is defence-in-depth behind path-scoped routes, so that a route
+# which stops being scoped fails loudly instead of silently.
+_MAX_PLAUSIBLE_LINKED_CANDIDATES = 5
+
+
+def _pick(candidates: list[dict[str, Any]], via: str) -> tuple[RaceResolution | None, str]:
     """Choose one candidate from a linked set, preferring the most recent.
 
     A committee can be linked to more than one candidate over its life. The
     newest is the right default, but the others are carried on the result
     so the caller can offer them rather than hiding that a choice was made.
+
+    Returns (resolution, reason); resolution is None when this route
+    produced nothing usable, and reason explains why for the caller's
+    diagnostic note.
     """
     usable = [c for c in candidates if c.get("state")]
     if not usable:
-        return None
+        return None, "returned no candidate with a state"
+
+    if len(usable) > _MAX_PLAUSIBLE_LINKED_CANDIDATES:
+        return None, (
+            f"returned {len(usable)} candidates, far more than a committee can "
+            "plausibly be linked to -- treating the result as unscoped rather "
+            "than resolving to one of them"
+        )
 
     ordered = sorted(usable, key=_cycle_key, reverse=True)
     best = ordered[0]
 
     if len(ordered) == 1:
-        return _from_candidate(best, via)
+        return _from_candidate(best, via), "resolved"
 
     others = tuple(
         {
@@ -118,7 +154,7 @@ def _pick(candidates: list[dict[str, Any]], via: str) -> RaceResolution | None:
             "picked the most recent by election year."
         ),
     )
-    return RaceResolution(**{**resolution.__dict__, "alternatives": others})
+    return RaceResolution(**{**resolution.__dict__, "alternatives": others}), "resolved"
 
 
 async def resolve_committee_race(
@@ -141,30 +177,22 @@ async def resolve_committee_race(
     """
     attempts: list[str] = []
 
-    # Route 1: the committee_id filter on /candidates/. One request, and the
-    # returned candidate already carries state/district/office.
-    try:
-        data = await client.list_candidates(committee_id=committee_id, per_page=20)
-        picked = _pick(data.get("results") or [], "candidates_committee_id_filter")
-        if picked:
-            return picked
-        attempts.append("candidates?committee_id= returned no candidate with a state")
-    except (OpenFECError, AttributeError, TypeError) as exc:
-        attempts.append(f"candidates?committee_id= failed: {exc}")
-
-    # Route 2: the dedicated committee -> candidates sub-resource.
+    # Route 1: the committee -> candidates sub-resource. Scoped by URL path,
+    # so it cannot return candidates belonging to other committees the way
+    # a query-parameter filter silently can.
     try:
         data = await client.get_committee_candidates(committee_id)
-        picked = _pick(data.get("results") or [], "committee_candidates_endpoint")
+        picked, reason = _pick(data.get("results") or [], "committee_candidates_endpoint")
         if picked:
             return picked
-        attempts.append("/committee/{id}/candidates/ returned no candidate with a state")
+        attempts.append(f"/committee/{{id}}/candidates/ {reason}")
     except (OpenFECError, AttributeError, TypeError) as exc:
         attempts.append(f"/committee/{{id}}/candidates/ failed: {exc}")
 
-    # Route 3: candidate_ids on the committee record itself. Observed empty
-    # on a real principal campaign committee, which is why it is last rather
-    # than first, but it costs nothing when a record is already in hand.
+    # Route 2: candidate_ids on the committee record, resolved one at a time
+    # through /candidate/{id}/ -- also path-scoped. Observed empty on a real
+    # principal campaign committee, which is why it isn't first, but it
+    # costs nothing when the record is already in hand.
     try:
         record = committee_record
         if record is None:
@@ -175,11 +203,13 @@ async def resolve_committee_race(
         candidate_ids = (record or {}).get("candidate_ids") or []
         for candidate_id in candidate_ids:
             detail = await client.get_candidate(candidate_id)
-            picked = _pick(detail.get("results") or [], "committee_record_candidate_ids")
+            picked, _ = _pick(detail.get("results") or [], "committee_record_candidate_ids")
             if picked:
                 return picked
         if not candidate_ids:
             attempts.append("committee record has no candidate_ids")
+        else:
+            attempts.append("candidate_ids on the committee record resolved to no usable race")
     except (OpenFECError, AttributeError, TypeError, IndexError) as exc:
         attempts.append(f"committee record lookup failed: {exc}")
 
