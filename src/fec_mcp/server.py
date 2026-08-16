@@ -24,12 +24,16 @@ from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import replace
 from datetime import date, timedelta
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .calendar_invites import InviteEvent, build_calendar, events_from_deadlines
 from .deadlines import CommitteeProfile, CommitteeStatus, match_deadline
+from .invite_mailer import InviteMailerError, SMTPSettings, build_message, send_message
+from .invite_registry import InviteRegistry
 from .openfec_client import OpenFECClient, OpenFECError
 from .race_lookup import resolve_committee_race
 from .rulebook_index import RulebookIndex
@@ -991,6 +995,176 @@ async def get_committee_deadlines(
         "excluded": excluded,
         "warnings": warnings,
     }
+
+
+@mcp.tool()
+async def send_deadline_invites(
+    committee: str,
+    status: str,
+    recipients: list[str],
+    state: str | None = None,
+    district: str | None = None,
+    months_ahead: int = 12,
+    send: bool = False,
+) -> dict[str, Any]:
+    """Put a committee's FEC filing deadlines on people's calendars.
+
+    Emails calendar invitations for every deadline the committee owes, to
+    one or more recipients. Re-running after the committee's status
+    changes UPDATES the existing calendar entries rather than duplicating
+    them, and WITHDRAWS the ones no longer owed -- so a committee that
+    loses its primary has the pre-general and post-general disappear from
+    everyone's calendar instead of lingering as filings that are not due.
+
+    IMPORTANT: `send` is False by default, and this tool previews without
+    emailing anyone until it is set True. Email cannot be recalled and
+    goes to other people, so show the preview -- the deadlines that would
+    be sent, the ones that would be withdrawn, and the recipient list --
+    and get the user's explicit go-ahead before sending. Do not set
+    send=True on your own initiative.
+
+    Args:
+        committee: FEC committee ID (e.g. "C00614701") or committee name.
+        status: Lifecycle status -- "in_primary", "won_primary",
+            "lost_primary", "won_general", "lost_general", "terminating",
+            or "ongoing" for a PAC or party committee. Ask which applies.
+        recipients: Email addresses to invite. All of them receive every
+            deadline.
+        state: Two-letter state of the federal race, for state-timed
+            deadlines like pre-primary reports.
+        district: District for a House seat, e.g. "04".
+        months_ahead: How far ahead to schedule, default 12 months.
+        send: Leave False to preview. Set True only after the user has
+            seen the preview and confirmed.
+    """
+    addresses = [r.strip() for r in (recipients or []) if r and r.strip()]
+    if not addresses:
+        return {"error": "Provide at least one recipient email address."}
+
+    deadlines_result = await get_committee_deadlines(
+        committee=committee,
+        status=status,
+        state=state,
+        district=district,
+        months_ahead=months_ahead,
+    )
+    if "error" in deadlines_result:
+        return deadlines_result
+
+    committee_id = deadlines_result["committee"]["committee_id"]
+    committee_name = deadlines_result["committee"]["name"]
+    deadlines = deadlines_result["deadlines"]
+
+    registry = InviteRegistry()
+    events = events_from_deadlines(committee_id, committee_name, deadlines)
+    plan = registry.plan(committee_id, [e.uid for e in events])
+
+    # Re-stamp each event with the SEQUENCE this send is using. A revision
+    # whose SEQUENCE is not strictly higher than the last is silently
+    # ignored by calendar clients, which is indistinguishable from success.
+    events = [replace(e, sequence=plan.sequences.get(e.uid, e.sequence)) for e in events]
+    cancelled = [
+        InviteEvent(
+            uid=uid,
+            summary=f"{committee_name}: FEC filing deadline (withdrawn)",
+            description=(
+                "This deadline no longer applies to this committee following a "
+                f"change of status to {status}."
+            ),
+            on=date.today(),
+            sequence=plan.sequences.get(uid, 1),
+        )
+        for uid in plan.to_cancel
+    ]
+
+    preview = {
+        "committee": deadlines_result["committee"],
+        "status": status,
+        "race": deadlines_result["race"],
+        "recipients": addresses,
+        "would_invite": [
+            {"date": e.on.isoformat(), "summary": e.summary, "sequence": e.sequence}
+            for e in events
+        ],
+        "would_withdraw": [{"uid": uid} for uid in plan.to_cancel],
+        "warnings": deadlines_result.get("warnings", []),
+    }
+
+    if not send:
+        preview["sent"] = False
+        preview["note"] = (
+            "Preview only -- no email sent. Show this to the user and get "
+            "explicit confirmation, then call again with send=True."
+        )
+        return preview
+
+    try:
+        settings = SMTPSettings.from_env()
+    except InviteMailerError as exc:
+        return {"error": str(exc), **preview, "sent": False}
+
+    try:
+        if events:
+            ics = build_calendar(
+                events,
+                organizer_email=settings.from_address,
+                attendee_emails=addresses,
+                method="REQUEST",
+            )
+            send_message(
+                build_message(
+                    settings=settings,
+                    recipients=addresses,
+                    subject=f"FEC filing deadlines - {committee_name}",
+                    body=(
+                        f"Calendar invitations for {committee_name} "
+                        f"({committee_id}), status: {status}.\n\n"
+                        f"{len(events)} deadline(s) attached."
+                    ),
+                    ics=ics,
+                    method="REQUEST",
+                ),
+                settings,
+            )
+
+        if cancelled:
+            # Sent as its own message: one email cannot carry both a
+            # REQUEST and a CANCEL, since METHOD is set per calendar.
+            ics = build_calendar(
+                cancelled,
+                organizer_email=settings.from_address,
+                attendee_emails=addresses,
+                method="CANCEL",
+            )
+            send_message(
+                build_message(
+                    settings=settings,
+                    recipients=addresses,
+                    subject=f"Withdrawn: FEC filing deadlines - {committee_name}",
+                    body=(
+                        f"{len(cancelled)} deadline(s) no longer apply to "
+                        f"{committee_name} ({committee_id}) following its change "
+                        f"of status to {status}, and have been withdrawn."
+                    ),
+                    ics=ics,
+                    method="CANCEL",
+                ),
+                settings,
+            )
+    except InviteMailerError as exc:
+        # Nothing is recorded on failure: marking these as delivered would
+        # make the next run skip re-sending them, turning one failed send
+        # into a permanently missing calendar entry.
+        return {"error": str(exc), **preview, "sent": False}
+
+    registry.record(committee_id, plan, recipients=addresses)
+
+    preview["sent"] = True
+    preview["note"] = (
+        f"Invited {len(events)} deadline(s) and withdrew {len(plan.to_cancel)} "
+        f"for {len(addresses)} recipient(s)."
+    )
+    return preview
 
 
 def main() -> None:

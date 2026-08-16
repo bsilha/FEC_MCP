@@ -1065,6 +1065,57 @@ def get_committee_deadlines(
 
 
 @beta_tool
+def send_deadline_invites(
+    committee: str,
+    status: str,
+    recipients: list[str],
+    state: str | None = None,
+    district: str | None = None,
+    months_ahead: int = 12,
+    send: bool = False,
+) -> str:
+    """Put a committee's FEC filing deadlines on people's calendars.
+
+    Emails calendar invitations for every deadline the committee owes.
+    Re-running after a status change updates the existing entries rather
+    than duplicating them, and withdraws the ones no longer owed -- so a
+    committee that loses its primary has the pre-general and post-general
+    disappear from everyone's calendar.
+
+    IMPORTANT: `send` defaults to False and nothing is emailed until it is
+    True. Email cannot be recalled and goes to other people. Always run
+    the preview first, show the user which deadlines would be invited,
+    which would be withdrawn, and who would receive them, and get their
+    explicit go-ahead before calling again with send=True. Never set
+    send=True on your own initiative.
+
+    Args:
+        committee: FEC committee ID (e.g. "C00614701") or committee name.
+        status: Lifecycle status -- "in_primary", "won_primary",
+            "lost_primary", "won_general", "lost_general", "terminating",
+            or "ongoing" for a PAC. Ask the user which applies.
+        recipients: Email addresses to invite.
+        state: Two-letter state of the federal race, for state-timed
+            deadlines like pre-primary reports.
+        district: District for a House seat, e.g. "04".
+        months_ahead: How far ahead to schedule, default 12 months.
+        send: Leave False to preview; True only after user confirmation.
+    """
+    return _json(
+        _run_async(
+            server.send_deadline_invites,
+            committee=committee,
+            status=status,
+            recipients=recipients,
+            state=state,
+            district=district,
+            months_ahead=months_ahead,
+            send=send,
+        )
+    )
+
+
+@beta_tool
 def search_advisory_opinions(
     q: str | None = None,
     ao_no: str | None = None,
@@ -1141,6 +1192,7 @@ TOOLS = [
     search_elections,
     get_reporting_calendar,
     get_committee_deadlines,
+    send_deadline_invites,
     search_advisory_opinions,
     get_advisory_opinion,
 ]

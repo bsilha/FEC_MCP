@@ -18,3 +18,6 @@ data/rulebooks/.index/
 # so Streamlit's static file server can serve PDF-page-linking URLs --
 # generated, not source data.
 /demo/static/
+
+# Record of which deadline invitations have been sent (per-install state).
+data/sent_invites.json

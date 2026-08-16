@@ -25,6 +25,7 @@ async def test_list_tools_registers_all_expected_tools():
         "search_elections",
         "get_reporting_calendar",
         "get_committee_deadlines",
+        "send_deadline_invites",
         "search_advisory_opinions",
         "get_advisory_opinion",
     }
