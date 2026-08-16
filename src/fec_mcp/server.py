@@ -23,6 +23,7 @@ research aids and cited back to their source (PDF page or OpenFEC record).
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -741,6 +742,73 @@ async def get_advisory_opinion(ao_no: str) -> dict[str, Any]:
     return {"docs": data.get("docs", [])}
 
 
+_COMMITTEE_ID_PATTERN = re.compile(r"^C\d{8}$", re.IGNORECASE)
+
+
+async def _find_committee(committee: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Look up one committee by FEC ID or by name.
+
+    Returns (record, error). Exactly one is non-None.
+
+    An ambiguous name is an error rather than a best guess. Picking the
+    top fuzzy match would produce a complete, well-formed, confidently
+    wrong deadline schedule for a committee the caller never asked about,
+    and nothing downstream could detect it -- the same failure mode that
+    silently resolved six unrelated committees to one race earlier in this
+    feature's development. Ambiguity gets handed back to be resolved by
+    someone who knows which committee is meant.
+    """
+    text = (committee or "").strip()
+    if not text:
+        return None, {"error": "Provide an FEC committee ID (e.g. C00614701) or a committee name."}
+
+    client = await _client()
+
+    if _COMMITTEE_ID_PATTERN.match(text):
+        try:
+            data = await client.get_committee(text.upper())
+        except OpenFECError as exc:
+            return None, {"error": str(exc)}
+        results = data.get("results") or []
+        if not results:
+            return None, {"error": f"No committee found with ID {text.upper()!r}."}
+        return results[0], None
+
+    try:
+        data = await client.search_committees(name=text, per_page=10)
+    except OpenFECError as exc:
+        return None, {"error": str(exc)}
+
+    matches = data.get("results") or []
+    if not matches:
+        return None, {
+            "error": f"No committee found matching {text!r}.",
+            "hint": "Try the FEC committee ID (e.g. C00614701), or search_committees for a broader look.",
+        }
+
+    if len(matches) > 1:
+        # An exact, unambiguous name match is not really ambiguity.
+        exact = [m for m in matches if (m.get("name") or "").strip().lower() == text.lower()]
+        if len(exact) == 1:
+            return exact[0], None
+
+        return None, {
+            "error": f"{len(matches)} committees match {text!r}. Pick one and pass its committee ID.",
+            "matches": [
+                {
+                    "committee_id": m.get("committee_id"),
+                    "name": m.get("name"),
+                    "state": m.get("state"),
+                    "committee_type": m.get("committee_type_full"),
+                    "designation": m.get("designation_full"),
+                }
+                for m in matches
+            ],
+        }
+
+    return matches[0], None
+
+
 async def _fetch_reporting_calendar(
     start: date, end: date, max_pages: int = 4
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -777,7 +845,7 @@ async def _fetch_reporting_calendar(
 
 @mcp.tool()
 async def get_committee_deadlines(
-    committee_id: str,
+    committee: str,
     status: str,
     state: str | None = None,
     district: str | None = None,
@@ -795,7 +863,11 @@ async def get_committee_deadlines(
     silently produces a wrong deadline set.
 
     Args:
-        committee_id: FEC committee ID, e.g. "C00614701".
+        committee: FEC committee ID (e.g. "C00614701") or committee name
+            (e.g. "Crane for Congress"). A name matching several
+            committees returns the list of matches to choose from rather
+            than picking one -- the wrong committee would yield a
+            complete, plausible, entirely wrong schedule.
         status: Where the committee is in its election lifecycle. One of:
             "in_primary", "won_primary", "lost_primary", "won_general",
             "lost_general", "terminating", or "ongoing" for a PAC or party
@@ -823,15 +895,10 @@ async def get_committee_deadlines(
             "valid_statuses": [s.value for s in CommitteeStatus],
         }
 
-    try:
-        data = await (await _client()).get_committee(committee_id)
-    except OpenFECError as exc:
-        return {"error": str(exc)}
-
-    results = data.get("results") or []
-    if not results:
-        return {"error": f"No committee found with ID {committee_id!r}."}
-    record = results[0]
+    record, lookup_error = await _find_committee(committee)
+    if lookup_error is not None:
+        return lookup_error
+    committee_id = record.get("committee_id") or committee
 
     # An explicitly-passed race always wins over a looked-up one: the
     # caller knows their own client's race, and OpenFEC frequently cannot

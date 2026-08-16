@@ -53,14 +53,22 @@ CALENDAR = [
 
 
 class StubClient:
-    def __init__(self, committee, calendar=CALENDAR, pages=1):
+    def __init__(self, committee, calendar=CALENDAR, pages=1, search_results=None):
         self._committee = committee
         self._calendar = calendar
         self._pages = pages
+        self._search_results = search_results
         self.calendar_pages_requested = []
+        self.searched_names = []
 
     async def get_committee(self, committee_id):
         return {"results": [self._committee]}
+
+    async def search_committees(self, name=None, per_page=20, **kwargs):
+        self.searched_names.append(name)
+        if self._search_results is None:
+            return {"results": [self._committee]}
+        return {"results": self._search_results}
 
     async def get_committee_candidates(self, committee_id):
         return {"results": []}  # matches observed live behavior
@@ -245,6 +253,81 @@ async def test_unknown_committee_reports_an_error(stub, monkeypatch):
 
     monkeypatch.setattr(client, "get_committee", empty)
     result = await server.get_committee_deadlines("C00000000", status="ongoing")
+    assert "error" in result
+
+
+# -- looking a committee up by ID or by name --------------------------------
+
+
+async def test_a_committee_id_is_used_directly_without_searching(stub):
+    client = stub(CANDIDATE_COMMITTEE)
+    result = await server.get_committee_deadlines("C00614701", status="ongoing")
+
+    assert client.searched_names == [], "an ID should not trigger a name search"
+    assert result["committee"]["committee_id"] == "C00614701"
+
+
+async def test_a_lowercase_committee_id_is_still_recognized_as_an_id(stub):
+    client = stub(CANDIDATE_COMMITTEE)
+    await server.get_committee_deadlines("c00614701", status="ongoing")
+    assert client.searched_names == []
+
+
+async def test_a_name_is_searched_for(stub):
+    client = stub(CANDIDATE_COMMITTEE)
+    result = await server.get_committee_deadlines("Crane for Congress", status="ongoing")
+
+    assert client.searched_names == ["Crane for Congress"]
+    assert result["committee"]["name"] == "CRANE FOR CONGRESS"
+
+
+async def test_a_single_name_match_resolves_to_that_committee(stub):
+    stub(CANDIDATE_COMMITTEE, search_results=[CANDIDATE_COMMITTEE])
+    result = await server.get_committee_deadlines("Crane for Congress", status="ongoing")
+    assert result["committee"]["committee_id"] == "C00614701"
+
+
+async def test_an_ambiguous_name_returns_the_matches_instead_of_guessing(stub):
+    """Picking the top fuzzy match would produce a complete, plausible,
+    entirely wrong schedule for a committee nobody asked about -- and
+    nothing downstream could detect it."""
+    others = [
+        dict(CANDIDATE_COMMITTEE, committee_id="C00111111", name="CRANE FOR CONGRESS INC"),
+        dict(CANDIDATE_COMMITTEE, committee_id="C00222222", name="CRANE VICTORY FUND"),
+    ]
+    stub(CANDIDATE_COMMITTEE, search_results=others)
+    result = await server.get_committee_deadlines("Crane", status="ongoing")
+
+    assert "error" in result
+    assert "deadlines" not in result
+    assert {m["committee_id"] for m in result["matches"]} == {"C00111111", "C00222222"}
+
+
+async def test_an_exact_name_match_is_not_treated_as_ambiguous(stub):
+    """A fuzzy search returning near-misses alongside an exact hit isn't
+    real ambiguity -- requiring an ID there would be needless friction."""
+    results = [
+        dict(CANDIDATE_COMMITTEE, committee_id="C00111111", name="CRANE FOR CONGRESS INC"),
+        CANDIDATE_COMMITTEE,  # exact
+    ]
+    stub(CANDIDATE_COMMITTEE, search_results=results)
+    result = await server.get_committee_deadlines("Crane for Congress", status="ongoing")
+
+    assert "error" not in result
+    assert result["committee"]["committee_id"] == "C00614701"
+
+
+async def test_a_name_matching_nothing_reports_that_clearly(stub):
+    stub(CANDIDATE_COMMITTEE, search_results=[])
+    result = await server.get_committee_deadlines("Nonexistent Committee", status="ongoing")
+
+    assert "error" in result
+    assert "No committee found" in result["error"]
+
+
+async def test_an_empty_committee_argument_is_rejected(stub):
+    stub(CANDIDATE_COMMITTEE)
+    result = await server.get_committee_deadlines("   ", status="ongoing")
     assert "error" in result
 
 

@@ -1020,6 +1020,51 @@ def get_reporting_calendar(
 
 
 @beta_tool
+def get_committee_deadlines(
+    committee: str,
+    status: str,
+    state: str | None = None,
+    district: str | None = None,
+    months_ahead: int = 12,
+) -> str:
+    """Which FEC filing deadlines actually bind one committee, and when.
+
+    Filters the FEC's published calendar down to what this committee owes,
+    based on where it is in its election lifecycle. A committee that lost
+    its primary owes no general-election reports; one that won owes both
+    the pre-general and post-general.
+
+    Args:
+        committee: FEC committee ID (e.g. "C00614701") or committee name
+            (e.g. "Crane for Congress"). If a name matches several
+            committees, the matches are returned to choose from rather
+            than one being picked.
+        status: Required -- one of "in_primary", "won_primary",
+            "lost_primary", "won_general", "lost_general", "terminating",
+            or "ongoing" for a PAC or party committee. Ask the user which
+            applies rather than assuming; the wrong status silently
+            produces the wrong deadlines.
+        state: Two-letter state of the federal race, e.g. "MI". Needed for
+            state-timed deadlines like pre-primary reports, since federal
+            primaries fall on different dates in different states. Pass it
+            whenever the user knows it -- OpenFEC often cannot report
+            which candidate a committee belongs to.
+        district: District for a House seat, e.g. "04".
+        months_ahead: How far ahead to look, default 12 months.
+    """
+    return _json(
+        _run_async(
+            server.get_committee_deadlines,
+            committee=committee,
+            status=status,
+            state=state,
+            district=district,
+            months_ahead=months_ahead,
+        )
+    )
+
+
+@beta_tool
 def search_advisory_opinions(
     q: str | None = None,
     ao_no: str | None = None,
@@ -1095,6 +1140,7 @@ TOOLS = [
     search_filings,
     search_elections,
     get_reporting_calendar,
+    get_committee_deadlines,
     search_advisory_opinions,
     get_advisory_opinion,
 ]
