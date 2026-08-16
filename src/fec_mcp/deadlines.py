@@ -426,10 +426,49 @@ def match_deadline(record: dict[str, Any], profile: CommitteeProfile) -> Deadlin
     # committees (whose status is ONGOING, i.e. regular reports only), and
     # they do owe pre/post-general reports when they spend in a race.
     if not profile.is_authorized:
+        frequency = (profile.filing_frequency or "").upper()
+
+        # A monthly-filing committee's election reports are not
+        # activity-dependent at all, and the FEC guides are explicit in both
+        # directions:
+        #
+        #   "During an election year, a monthly filer files pre- and
+        #    post-election reports instead of the November and December
+        #    reports." (colagui.pdf p.131; also nongui.pdf p.58,
+        #    partygui.pdf p.105 "in lieu of")
+        #
+        #   "monthly filers do not have to file pre-primary reports or
+        #    special election reports" (nongui.pdf p.58, colagui.pdf p.132)
+        #
+        # Treating the pre/post-general as merely possible was the dangerous
+        # half: they REPLACE the November and December monthly reports, so a
+        # committee that skipped them as optional would file nothing at all
+        # for that period.
+        if frequency == FREQUENCY_MONTHLY:
+            if family in (ReportFamily.PRE_GENERAL, ReportFamily.POST_GENERAL) and is_national(
+                record
+            ):
+                return DeadlineMatch(
+                    True,
+                    family,
+                    "monthly filer: required, filed in lieu of the November and "
+                    "December monthly reports",
+                )
+            return DeadlineMatch(
+                False,
+                family,
+                "monthly filers do not file pre-primary or special-election reports",
+            )
+
+        # Quarterly-filing PACs and party committees genuinely are
+        # activity-dependent -- they owe a pre-election report only for an
+        # election in which they actually made contributions or expenditures,
+        # which no amount of committee metadata can answer.
         return DeadlineMatch(
             True,
             family,
-            "non-candidate committee; depends on whether it had activity in this race",
+            "non-candidate committee filing quarterly; depends on whether it had "
+            "reportable activity in this race",
             certain=False,
         )
 

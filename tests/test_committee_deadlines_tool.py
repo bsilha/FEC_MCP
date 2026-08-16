@@ -185,16 +185,51 @@ async def test_unresolved_race_warns_that_state_timed_deadlines_were_skipped(stu
     assert any("race is unknown" in w for w in result["warnings"])
 
 
-async def test_pac_gets_monthly_reports_and_flagged_election_reports(stub):
-    """A PAC's election reports depend on whether it spent in the race,
-    which status can't answer -- shown, but marked unverified."""
+async def test_monthly_filing_pac_gets_monthly_not_quarterly_reports(stub):
     stub(PAC_COMMITTEE)
     result = await server.get_committee_deadlines("C00401224", status="ongoing")
     summaries = _summaries(result["deadlines"])
 
     assert "October Monthly Report Due" in summaries
     assert "October Quarterly Report Due" not in summaries
-    assert any(not r["certain"] for r in result["deadlines"])
+
+
+async def test_monthly_filing_pac_owes_the_general_election_reports_outright(stub):
+    """Not activity-dependent: for a monthly filer these REPLACE the
+    November and December monthly reports (colagui.pdf p.131, nongui.pdf
+    p.58), so treating them as optional would leave the committee filing
+    nothing at all for that period."""
+    stub(PAC_COMMITTEE)
+    result = await server.get_committee_deadlines("C00401224", status="ongoing")
+    rows = {r["deadline"]: r for r in result["deadlines"]}
+
+    for summary in ("12G Pre-General Report Due", "30G Post-General Report Due"):
+        assert summary in rows, f"{summary} must apply to a monthly filer"
+        assert rows[summary]["certain"], f"{summary} is required, not merely possible"
+
+
+async def test_monthly_filing_pac_does_not_get_pre_primary_reports(stub):
+    """"monthly filers do not have to file pre-primary reports or special
+    election reports" -- nongui.pdf p.58, colagui.pdf p.132."""
+    stub(PAC_COMMITTEE)
+    result = await server.get_committee_deadlines("C00401224", status="ongoing")
+    summaries = _summaries(result["deadlines"])
+
+    assert "MI Pre-Primary Report Due" not in summaries
+    assert "NY Pre-Primary Report Due" not in summaries
+
+
+async def test_quarterly_filing_pac_election_reports_stay_activity_dependent(stub):
+    """Unlike a monthly filer, a quarterly-filing PAC owes a pre-election
+    report only where it actually had reportable activity -- which no
+    committee metadata can answer, so it must stay flagged."""
+    quarterly_pac = dict(PAC_COMMITTEE, filing_frequency="Q")
+    stub(quarterly_pac)
+    result = await server.get_committee_deadlines("C00401224", status="ongoing")
+    rows = {r["deadline"]: r for r in result["deadlines"]}
+
+    assert not rows["12G Pre-General Report Due"]["certain"]
+    assert "activity" in rows["12G Pre-General Report Due"]["reason"]
 
 
 async def test_excluded_deadlines_explain_a_lifecycle_exclusion(stub):
