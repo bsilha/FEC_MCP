@@ -19,6 +19,7 @@ import asyncio
 import html
 import json
 import os
+import re
 import shutil
 from datetime import date
 from pathlib import Path
@@ -117,6 +118,89 @@ BRAND_STEEL = "#4B6B85"
 BRAND_ACCENT = "#1E88C7"
 BRAND_PURPLE = "#6E71C9"  # source citation badges -- matches the chart's first data series
 BRAND_TEAL = "#3FC7C9"  # AO status badges -- matches the chart's second data series
+
+
+# Lifecycle statuses, in the order someone actually moves through them,
+# with the consequence of each spelled out.
+#
+# The consequence text is the most valuable thing in this whole view. The
+# status silently decides the entire deadline set -- pick "lost the
+# primary" and the pre-general and post-general vanish -- and the raw enum
+# values ("won_primary") give no hint of that. Someone picking from a list
+# should be able to see what their answer changes before they commit to it.
+STATUS_CHOICES: list[tuple[str, str, str]] = [
+    ("in_primary", "Still in the primary", "Pre-primary report only; no general-election reports yet"),
+    ("won_primary", "Won the primary", "Adds the 12G pre-general and 30G post-general"),
+    ("lost_primary", "Lost the primary", "Drops both general-election reports; regular filing continues"),
+    ("won_general", "Won the general", "Post-general still due; continues into the next cycle"),
+    ("lost_general", "Lost the general", "Post-general still due; filing continues until termination"),
+    ("terminating", "Winding down", "Regular reports only, until the termination report"),
+    ("ongoing", "PAC or party committee", "No primary or general of its own to win or lose"),
+]
+
+_STATUS_LABELS = {value: label for value, label, _ in STATUS_CHOICES}
+_STATUS_HINTS = {value: hint for value, _, hint in STATUS_CHOICES}
+
+VIEW_SWITCH_CSS = """
+<style>
+/* The Chat/Deadlines switch is navigation, not another paragraph of the
+   page intro it sits directly beneath -- without space above it, it reads
+   as part of that sentence. The rule below it gives the same "content
+   starts here" edge a tab bar would. */
+[data-testid="stSegmentedControl"] {
+    margin: 18px 0 4px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid #d8dee3;
+}
+</style>
+"""
+
+DEADLINE_CSS = f"""
+<style>
+/* One deadline per row. Date first and fixed-width so the column reads as
+   a timeline when scanned vertically, which is how someone checks "what's
+   next" -- the thing this view exists to answer. */
+.fec-dl-row {{
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 11px; border-bottom: 1px solid #eef1f4;
+    font-size: 0.86rem; background: #fff;
+}}
+.fec-dl-row:first-child {{ border-radius: 7px 7px 0 0; }}
+.fec-dl-row:last-child {{ border-bottom: none; border-radius: 0 0 7px 7px; }}
+.fec-dl-wrap {{ border: 1px solid #d8dee3; border-radius: 8px; overflow: hidden; }}
+.fec-dl-date {{ font-weight: 700; width: 84px; flex-shrink: 0; color: {BRAND_NAVY_MID}; }}
+.fec-dl-name {{ flex: 1; color: {BRAND_NAVY_DARK}; }}
+.fec-dl-kind {{
+    font-size: 0.62rem; font-weight: 700; letter-spacing: .03em;
+    padding: 2px 7px; border-radius: 4px; background: #e8eef4; color: {BRAND_STEEL};
+    white-space: nowrap;
+}}
+.fec-dl-kind.gen {{ background: #e7e8f7; color: {BRAND_PURPLE}; }}
+/* Deliberately amber rather than red: an unconfirmed deadline is a
+   decision someone needs to make, not an error the app has hit. */
+.fec-dl-flag {{
+    font-size: 0.62rem; font-weight: 700; letter-spacing: .03em;
+    padding: 2px 7px; border-radius: 4px; background: #fff4e5; color: #7a5320;
+    white-space: nowrap;
+}}
+</style>
+"""
+
+
+def _deadline_row_html(row: dict[str, Any]) -> str:
+    """One deadline as a table row."""
+    family = (row.get("report_type") or "").replace("_", "-").upper() or "DEADLINE"
+    is_general = "GENERAL" in family
+    flag = "" if row.get("certain", True) else '<span class="fec-dl-flag">CONFIRM</span>'
+    return (
+        '<div class="fec-dl-row">'
+        f'<span class="fec-dl-date">{html.escape(str(row.get("date") or ""))}</span>'
+        f'<span class="fec-dl-name">{html.escape(str(row.get("deadline") or ""))}</span>'
+        f'{flag}'
+        f'<span class="fec-dl-kind{" gen" if is_general else ""}">{html.escape(family)}</span>'
+        "</div>"
+    )
+
 
 # Rulebook jurisdictions come back from list_rulebook_sources() as lowercase
 # two-letter USPS codes (e.g. "ca") -- fine for internal filtering, but per
@@ -1244,12 +1328,276 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
     return {"text": text, "trace": trace, "stop_reason": last_message.stop_reason}
 
 
+def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit UI
+    """Step 1: find and choose one committee.
+
+    Searching returns a list to pick from rather than resolving silently.
+    The underlying tool errors on an ambiguous name on purpose -- picking
+    the top fuzzy match would produce a complete, plausible, wrong
+    schedule for a committee nobody asked about -- and a UI can do better
+    than an error: show the matches and let a person choose.
+    """
+    st.markdown("**1 &middot; Committee**", unsafe_allow_html=True)
+    chosen = st.session_state.get("dl_committee")
+
+    if chosen:
+        left, right = st.columns([5, 1])
+        with left:
+            st.success(
+                f"**{chosen.get('name')}** — {chosen.get('committee_id')} · "
+                f"{chosen.get('state') or '—'} · "
+                f"{'quarterly' if (chosen.get('filing_frequency') or '').upper() == 'Q' else 'monthly' if (chosen.get('filing_frequency') or '').upper() == 'M' else 'unknown'} filer"
+            )
+        with right:
+            if st.button("Change", use_container_width=True):
+                for key in ("dl_committee", "dl_matches", "dl_result", "dl_preview"):
+                    st.session_state.pop(key, None)
+                st.rerun()
+        return chosen
+
+    query = st.text_input(
+        "Committee name or FEC ID",
+        placeholder="Eli Crane for Congress    —or—    C00784934",
+        key="dl_query",
+    )
+    if st.button("Find committee", type="primary") and query.strip():
+        text = query.strip()
+        with st.spinner("Searching OpenFEC..."):
+            if re.fullmatch(r"C\d{8}", text, re.IGNORECASE):
+                found = _run_async(server.get_committee, committee_id=text.upper())
+            else:
+                found = _run_async(server.search_committees, name=text, per_page=10)
+        if "error" in found:
+            st.error(found["error"])
+        else:
+            st.session_state["dl_matches"] = found.get("results") or []
+            st.rerun()
+
+    matches = st.session_state.get("dl_matches")
+    if matches is not None:
+        if not matches:
+            st.warning("No committee matched that. Try the FEC ID, or fewer words.")
+        elif len(matches) == 1:
+            st.session_state["dl_committee"] = matches[0]
+            st.session_state.pop("dl_matches", None)
+            st.rerun()
+        else:
+            st.caption(f"{len(matches)} matches — pick one:")
+            for i, match in enumerate(matches):
+                label = (
+                    f"{match.get('name')} · {match.get('committee_id')} · "
+                    f"{match.get('state') or '—'} · {match.get('designation_full') or ''}"
+                )
+                if st.button(label, key=f"dl_match_{i}", use_container_width=True):
+                    st.session_state["dl_committee"] = match
+                    st.session_state.pop("dl_matches", None)
+                    st.rerun()
+    return None
+
+
+def _status_step(committee: dict[str, Any]) -> tuple[str, str | None, str | None]:  # pragma: no cover
+    """Step 2: lifecycle status, plus the race for a candidate committee."""
+    st.markdown("**2 &middot; Where is it in the cycle?**", unsafe_allow_html=True)
+
+    is_candidate_committee = (committee.get("designation") or "").upper() in {"P", "A"}
+    choices = (
+        [c for c in STATUS_CHOICES if c[0] != "ongoing"]
+        if is_candidate_committee
+        else [c for c in STATUS_CHOICES if c[0] in {"ongoing", "terminating"}]
+    )
+
+    status = st.radio(
+        "Lifecycle status",
+        options=[value for value, _, _ in choices],
+        format_func=lambda v: f"{_STATUS_LABELS[v]} — {_STATUS_HINTS[v]}",
+        key="dl_status",
+        label_visibility="collapsed",
+    )
+
+    state = district = None
+    if is_candidate_committee:
+        # Only asked of candidate committees: a PAC has no single race, and
+        # monthly-filing PACs owe no state-timed reports at all, so the
+        # field would be noise there.
+        left, right = st.columns(2)
+        with left:
+            state = st.text_input(
+                "Race state", value=committee.get("state") or "", max_chars=2,
+                help="Two-letter state of the FEDERAL race — this is where the race is, "
+                     "not a state campaign-finance jurisdiction.",
+                key="dl_state",
+            ).strip().upper() or None
+        with right:
+            district = st.text_input(
+                "District (House only)", placeholder="02", max_chars=2, key="dl_district"
+            ).strip() or None
+
+        if not state:
+            st.caption(
+                "Without a state, pre-primary and runoff deadlines can't be checked — "
+                "everything else still works. OpenFEC usually can't tell us the race, "
+                "so this is worth filling in."
+            )
+    return status, state, district
+
+
+def _render_deadlines(result: dict[str, Any]) -> None:  # pragma: no cover
+    """Step 3: the deadline list, what was excluded, and any warnings."""
+    deadlines = result.get("deadlines") or []
+    st.markdown("**3 &middot; Deadlines**", unsafe_allow_html=True)
+
+    if not deadlines:
+        st.info("No filing deadlines fall in this window for this committee.")
+        return
+
+    unverified = [d for d in deadlines if not d.get("certain", True)]
+    st.markdown(
+        '<div class="fec-dl-wrap">'
+        + "".join(_deadline_row_html(row) for row in deadlines)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if unverified:
+        st.caption(
+            f"{len(unverified)} marked CONFIRM could not be settled automatically — "
+            "they are listed rather than hidden so nothing is missed, but check whether "
+            "each applies."
+        )
+
+    excluded = result.get("excluded") or []
+    if excluded:
+        with st.expander(f"Why {len(excluded)} other deadlines don't apply"):
+            for row in excluded:
+                st.markdown(
+                    f"- **{row.get('date')}** {row.get('deadline')} — "
+                    f"_{row.get('reason')}_"
+                )
+
+    for warning in result.get("warnings") or []:
+        st.warning(warning)
+
+
+def _invite_step(committee: dict[str, Any], status: str,
+                 state: str | None, district: str | None) -> None:  # pragma: no cover
+    """Step 4: send calendar invitations.
+
+    Two presses, never one. Email goes to other people and cannot be
+    recalled, so the preview is mandatory and the send button only appears
+    once there is a preview on screen to have read.
+    """
+    st.markdown("**4 &middot; Send calendar invites**", unsafe_allow_html=True)
+
+    raw = st.text_area(
+        "Recipients",
+        placeholder="treasurer@campaign.com, counsel@firm.com",
+        help="One or more email addresses, separated by commas or new lines.",
+        key="dl_recipients",
+        height=68,
+    )
+    recipients = [a.strip() for a in re.split(r"[,\s]+", raw or "") if a.strip()]
+
+    # Deliberately NOT disabled on `recipients`. Streamlit only commits a
+    # text area's value on blur, so a button disabled from that value is
+    # still disabled at the moment someone finishes typing and clicks --
+    # the click lands on a dead control and nothing happens, and it takes
+    # a second click to work. Verified in the running app. The buttons stay
+    # live and validate on click instead, so one click always does
+    # something and says why if it can't.
+    left, right = st.columns(2)
+    with left:
+        preview_clicked = st.button("Preview invitations", use_container_width=True)
+    preview = st.session_state.get("dl_preview")
+    with right:
+        # Safe to disable from session state, which is settled before the
+        # button renders -- unlike a widget value typed in this same run.
+        send_clicked = st.button(
+            f"Send to {len(recipients)} recipient(s)" if recipients else "Send invitations",
+            type="primary", use_container_width=True,
+            disabled=not (preview and not preview.get("error") and preview.get("would_invite")),
+        )
+
+    if preview_clicked or send_clicked:
+        if not recipients:
+            st.warning("Add at least one email address first.")
+        else:
+            sending = bool(send_clicked)
+            with st.spinner("Sending..." if sending else "Building invitations..."):
+                st.session_state["dl_preview"] = _run_async(
+                    server.send_deadline_invites,
+                    committee=committee["committee_id"], status=status,
+                    recipients=recipients, state=state, district=district, send=sending,
+                )
+            st.rerun()
+
+    if not preview:
+        st.caption("Preview first — nothing is emailed until you send.")
+        return
+
+    if preview.get("error"):
+        st.error(preview["error"])
+
+    stale = preview.get("no_longer_applies_remove_manually") or []
+    if stale:
+        # The app never withdraws a calendar event, so this notice is the
+        # only thing standing between someone and a filing they don't owe.
+        # Rendered as an error rather than a warning for that reason, and
+        # it names the dates so the entries can actually be found.
+        st.error(
+            f"**{len(stale)} deadline(s) no longer apply but are still in recipients' "
+            "calendars.** Nothing is removed automatically — ask them to delete:\n\n"
+            + "\n".join(f"- {row.get('date') or 'date unknown'} — {row.get('summary')}" for row in stale)
+        )
+
+    if preview.get("sent"):
+        st.success(preview.get("note") or "Invitations sent.")
+    elif preview.get("would_invite"):
+        st.info(
+            f"Ready to send {len(preview['would_invite'])} invitation(s) to "
+            f"{', '.join(preview.get('recipients') or [])}."
+        )
+
+
+def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
+    """The whole deadline workflow, one committee at a time."""
+    st.markdown(DEADLINE_CSS, unsafe_allow_html=True)
+
+    committee = _committee_step()
+    if not committee:
+        st.caption(
+            "Find a committee to see which FEC filing deadlines bind it, and put "
+            "them on people's calendars."
+        )
+        return
+
+    st.divider()
+    status, state, district = _status_step(committee)
+
+    st.divider()
+    with st.spinner("Reading the FEC calendar..."):
+        result = _run_async(
+            server.get_committee_deadlines,
+            committee=committee["committee_id"], status=status,
+            state=state, district=district,
+        )
+
+    if "error" in result:
+        st.error(result["error"])
+        return
+
+    _render_deadlines(result)
+    if result.get("deadlines"):
+        st.divider()
+        _invite_step(committee, status, state, district)
+
+
 def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     _sync_static_pdfs()
     st.set_page_config(page_title="fec-mcp demo", page_icon="\U0001f5f3️", layout="wide")
     st.markdown(CITATION_CSS, unsafe_allow_html=True)
     st.markdown(HEADER_CSS, unsafe_allow_html=True)
     st.markdown(CHAT_BUBBLE_CSS, unsafe_allow_html=True)
+    st.markdown(VIEW_SWITCH_CSS, unsafe_allow_html=True)
     st.markdown(
         '<div class="fec-header-overlay">'
         '<div class="fec-topbar"><div class="badge">A</div>'
@@ -1330,6 +1678,20 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         if st.button("Clear conversation"):
             st.session_state.messages = []
             st.rerun()
+
+    # A segmented control rather than st.tabs, for two reasons that matter
+    # here. st.tabs renders every tab's body on every rerun, so the
+    # deadline form would re-hit OpenFEC on each chat message; and
+    # st.chat_input stays pinned to the bottom of the page regardless of
+    # which tab is showing, which would leave a chat box under the
+    # deadline form. Conditional rendering avoids both.
+    view = st.segmented_control(
+        "View", options=["Chat", "Deadlines"], default="Chat",
+        key="active_view", label_visibility="collapsed",
+    )
+    if view == "Deadlines":
+        _deadlines_view()
+        return
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
