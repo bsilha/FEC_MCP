@@ -4,21 +4,23 @@ Pure text generation -- no network, no files -- so the parts that are
 easy to get subtly wrong (escaping, folding, UID stability, cancellation
 semantics) are testable in isolation.
 
-Two things here carry the whole feature:
+This module only ever produces invitations (METHOD:REQUEST). It cannot
+withdraw an event, by design: removing entries from other people's
+calendars automatically is intrusive, and a fault in that path would
+delete things nobody asked it to touch. Recipients keep control of their
+own calendars.
 
-UID stability. A deadline's UID must be identical every time invitations
-are sent for it, because that is the only thing telling a calendar client
-"this is the event you already have" rather than "this is a new event".
-Get it wrong and re-sending after a status change silently duplicates
-every deadline instead of updating it.
+The consequence is that a deadline which stops applying does NOT
+disappear on its own -- sending a smaller set of events leaves the
+earlier ones in place. Whoever runs this is responsible for removing
+stale entries, so the caller is told exactly which ones went stale rather
+than being left to notice. (send_deadline_invites reports them.)
 
-Cancellation. Sending a smaller set of events does NOT remove the ones
-left out -- they simply stay in the recipient's calendar. So when a
-committee loses its primary, the pre-general and post-general it no
-longer owes must be explicitly withdrawn with METHOD:CANCEL, or the
-calendar keeps showing filings that are not due. That is the same
-wrong-answer failure this whole feature exists to prevent, just relocated
-into someone's Outlook.
+UID stability is what makes the rest work. A deadline's UID must be
+identical every time invitations are sent for it, because that is the
+only thing telling a calendar client "this is the event you already have"
+rather than "this is a new event". Get it wrong and re-sending after a
+status change silently duplicates every deadline instead of updating it.
 """
 
 from __future__ import annotations
@@ -130,23 +132,21 @@ def build_calendar(
     *,
     organizer_email: str,
     attendee_emails: Iterable[str],
-    method: str = "REQUEST",
     organizer_name: str = "FEC Compliance Calendar",
     now: datetime | None = None,
 ) -> str:
-    """Serialize events as a complete iCalendar document.
+    """Serialize events as an iCalendar invitation document.
 
-    Args:
-        method: "REQUEST" to create or update invitations, "CANCEL" to
-            withdraw them. A CANCEL must repeat the original UID with a
-            higher SEQUENCE; anything else leaves the event in place.
+    Always METHOD:REQUEST. There is deliberately no way to emit a
+    cancellation: this tool adds and updates calendar entries, and never
+    removes one from someone else's calendar. A deadline that stops
+    applying is reported to the caller instead, for a person to act on.
 
     Deadlines are all-day events: they name a day something is due, not a
     meeting. DTEND is the following day because RFC 5545 treats the end of
     an all-day event as exclusive -- setting it to the same day produces a
     zero-length event that some clients drop entirely.
     """
-    cancelling = method.upper() == "CANCEL"
     stamp = _stamp(now)
 
     lines: list[str] = [
@@ -154,7 +154,7 @@ def build_calendar(
         "VERSION:2.0",
         f"PRODID:{PRODID}",
         "CALSCALE:GREGORIAN",
-        f"METHOD:{method.upper()}",
+        "METHOD:REQUEST",
     ]
 
     for event in events:
@@ -168,7 +168,7 @@ def build_calendar(
                 f"SUMMARY:{_escape(event.summary)}",
                 f"DESCRIPTION:{_escape(event.description)}",
                 f"SEQUENCE:{event.sequence}",
-                f"STATUS:{'CANCELLED' if cancelling else 'CONFIRMED'}",
+                "STATUS:CONFIRMED",
                 "TRANSP:TRANSPARENT",
                 f"ORGANIZER;CN={_escape(organizer_name)}:mailto:{organizer_email}",
             ]
@@ -182,18 +182,16 @@ def build_calendar(
                 f"PARTSTAT=NEEDS-ACTION;RSVP=FALSE:mailto:{email}"
             )
 
-        # A filing deadline is worth more than a same-morning ping. Only on
-        # live invitations -- a reminder on a cancellation is noise.
-        if not cancelling:
-            lines.extend(
-                [
-                    "BEGIN:VALARM",
-                    "TRIGGER:-P3D",
-                    "ACTION:DISPLAY",
-                    f"DESCRIPTION:{_escape('Due in 3 days: ' + event.summary)}",
-                    "END:VALARM",
-                ]
-            )
+        # A filing deadline is worth more than a same-morning ping.
+        lines.extend(
+            [
+                "BEGIN:VALARM",
+                "TRIGGER:-P3D",
+                "ACTION:DISPLAY",
+                f"DESCRIPTION:{_escape('Due in 3 days: ' + event.summary)}",
+                "END:VALARM",
+            ]
+        )
 
         lines.append("END:VEVENT")
 

@@ -1,9 +1,9 @@
 """Coverage for iCalendar generation and the sent-invite registry.
 
-Weighted toward the two properties the feature depends on -- UID
-stability across sends, and cancellations actually being emitted -- since
-both fail silently. A duplicated event looks like a scheduling quirk and
-a missing cancellation looks like nothing at all, so neither shows up
+Weighted toward what fails silently: UID stability across sends, and the
+fact that this tool only ever invites. A duplicated event looks like a
+scheduling quirk rather than a bug, and a deadline that quietly stops
+being reported as stale looks like nothing at all, so neither surfaces
 without a test asserting it directly.
 """
 
@@ -107,21 +107,18 @@ def test_calendar_declares_request_method_for_invitations(sample_events):
     assert "STATUS:CONFIRMED" in _lines(ics)
 
 
-def test_cancellation_declares_cancel_and_cancelled_status(sample_events):
-    ics = build_calendar(
-        sample_events, organizer_email="a@b.com", attendee_emails=["c@d.com"], method="CANCEL"
-    )
-    lines = _lines(ics)
-    assert "METHOD:CANCEL" in lines
-    assert "STATUS:CANCELLED" in lines
+def test_calendars_can_only_ever_invite_never_withdraw(sample_events):
+    """By design this tool does not remove events from other people's
+    calendars, so there must be no way to emit a cancellation at all --
+    not merely no caller that does."""
+    ics = build_calendar(sample_events, organizer_email="a@b.com", attendee_emails=["c@d.com"])
+    assert "METHOD:CANCEL" not in ics
+    assert "STATUS:CANCELLED" not in ics
 
-
-def test_cancellations_carry_no_alarm(sample_events):
-    """A reminder for an event being withdrawn is pure noise."""
-    ics = build_calendar(
-        sample_events, organizer_email="a@b.com", attendee_emails=["c@d.com"], method="CANCEL"
-    )
-    assert "BEGIN:VALARM" not in ics
+    with pytest.raises(TypeError):
+        build_calendar(
+            sample_events, organizer_email="a@b.com", attendee_emails=[], method="CANCEL"
+        )
 
 
 def test_every_attendee_gets_an_attendee_line(sample_events):
@@ -196,7 +193,7 @@ def test_rows_without_a_usable_date_are_skipped_not_crashed():
     assert len(events) == 1
 
 
-# -- the registry, and cancellation -----------------------------------------
+# -- the registry, and stale deadlines -----------------------------------------
 
 
 @pytest.fixture
@@ -204,21 +201,21 @@ def registry(tmp_path):
     return InviteRegistry(path=tmp_path / "sent.json")
 
 
-def test_first_send_has_nothing_to_cancel(registry):
+def test_first_send_has_nothing_stale(registry):
     plan = registry.plan("C00614701", ["uid-a", "uid-b"])
     assert plan.to_send == ["uid-a", "uid-b"]
-    assert plan.to_cancel == []
+    assert plan.no_longer_applies == []
     assert all(plan.sequences[u] == 0 for u in plan.to_send)
 
 
-def test_a_deadline_that_no_longer_applies_is_cancelled(registry):
-    """The core of "deadlines update when a committee loses" -- without
-    this the dropped events stay in every recipient's calendar."""
+def test_a_deadline_that_no_longer_applies_is_reported(registry):
+    """Nothing is withdrawn -- those events stay in the recipient's
+    calendar -- so they have to be named for a person to remove."""
     first = registry.plan("C00614701", ["quarterly", "pre-general", "post-general"])
     registry.record("C00614701", first)
 
     second = registry.plan("C00614701", ["quarterly"])
-    assert set(second.to_cancel) == {"pre-general", "post-general"}
+    assert set(second.no_longer_applies) == {"pre-general", "post-general"}
     assert second.to_send == ["quarterly"]
 
 
@@ -231,18 +228,24 @@ def test_sequence_increments_on_every_send(registry):
     assert second.sequences["uid-a"] == first.sequences["uid-a"] + 1
 
 
-def test_cancellation_also_gets_a_higher_sequence(registry):
-    first = registry.plan("C1", ["uid-a"])
-    registry.record("C1", first)
-    second = registry.plan("C1", [])
-    assert second.to_cancel == ["uid-a"]
-    assert second.sequences["uid-a"] > first.sequences["uid-a"]
-
-
-def test_cancelled_uids_are_forgotten_so_they_are_not_cancelled_twice(registry):
+def test_a_stale_uid_stays_on_record_rather_than_being_forgotten(registry):
+    """The event is still in the recipient's calendar -- nothing was
+    withdrawn -- so its history has to survive, or a later re-send would
+    restart SEQUENCE at 0 and be ignored by the client holding a higher
+    one, looking sent while changing nothing."""
     registry.record("C1", registry.plan("C1", ["uid-a"]))
     registry.record("C1", registry.plan("C1", []))
-    assert registry.plan("C1", []).to_cancel == []
+    assert "uid-a" in registry.sent_uids("C1")
+
+
+def test_a_deadline_that_becomes_applicable_again_continues_its_sequence(registry):
+    first = registry.plan("C1", ["uid-a"])
+    registry.record("C1", first)          # sequence 0
+    registry.record("C1", registry.plan("C1", []))   # went stale
+    resumed = registry.plan("C1", ["uid-a"])
+
+    assert resumed.to_send == ["uid-a"]
+    assert resumed.sequences["uid-a"] > first.sequences["uid-a"]
 
 
 def test_registry_persists_across_instances(tmp_path):
@@ -271,7 +274,7 @@ def test_a_corrupt_registry_does_not_block_sending(tmp_path):
 def test_committees_do_not_interfere_with_each_other(registry):
     registry.record("C1", registry.plan("C1", ["uid-a"]))
     registry.record("C2", registry.plan("C2", ["uid-b"]))
-    assert registry.plan("C1", ["uid-a"]).to_cancel == []
+    assert registry.plan("C1", ["uid-a"]).no_longer_applies == []
     assert registry.sent_uids("C2") == {"uid-b": 0}
 
 
@@ -314,7 +317,5 @@ def test_a_registry_written_before_dates_were_stored_still_works(tmp_path):
         "date": None,
         "summary": None,
     }
-    # ...and it can still be cancelled, with a properly bumped sequence.
-    plan = registry.plan("C1", [])
-    assert plan.to_cancel == ["legacy-uid"]
-    assert plan.sequences["legacy-uid"] == 4
+    # ...and it is still reported as stale when it stops applying.
+    assert registry.plan("C1", []).no_longer_applies == ["legacy-uid"]

@@ -1060,9 +1060,14 @@ async def send_deadline_invites(
     Emails calendar invitations for every deadline the committee owes, to
     one or more recipients. Re-running after the committee's status
     changes UPDATES the existing calendar entries rather than duplicating
-    them, and WITHDRAWS the ones no longer owed -- so a committee that
-    loses its primary has the pre-general and post-general disappear from
-    everyone's calendar instead of lingering as filings that are not due.
+    them.
+
+    This tool never removes an event from anyone's calendar. A deadline
+    that stops applying -- the pre-general and post-general, once a
+    committee loses its primary -- stays in recipients' calendars until
+    someone deletes it. Those are listed under
+    "no_longer_applies_remove_manually" in the result and named in the
+    email itself; report them to the user, because nothing else will.
 
     IMPORTANT: `send` is False by default, and this tool previews without
     emailing anyone until it is set True. Email cannot be recalled and
@@ -1112,33 +1117,26 @@ async def send_deadline_invites(
     # whose SEQUENCE is not strictly higher than the last is silently
     # ignored by calendar clients, which is indistinguishable from success.
     events = [replace(e, sequence=plan.sequences.get(e.uid, e.sequence)) for e in events]
-    # A withdrawal reproduces the original event's date and summary where
-    # the registry recorded them. Matching is by UID per RFC 5545, but
-    # clients differ in how strictly they honor that, and a cancellation
-    # that fails to match leaves the deadline sitting in the calendar --
-    # the precise failure this is meant to prevent. Falls back to today's
-    # date only for events recorded before the registry stored dates.
-    cancelled = []
-    for uid in plan.to_cancel:
-        remembered = previously_sent.get(uid) or {}
-        original_date = remembered.get("date")
-        try:
-            on = date.fromisoformat(original_date) if original_date else date.today()
-        except (TypeError, ValueError):
-            on = date.today()
+    # Deadlines previously invited that this committee no longer owes.
+    # They are reported, never withdrawn: this tool does not remove events
+    # from other people's calendars. Described with the date and summary
+    # they were sent under so a person can find and delete them.
+    stale = [
+        {
+            "date": (previously_sent.get(uid) or {}).get("date"),
+            "summary": (previously_sent.get(uid) or {}).get("summary") or uid,
+            "uid": uid,
+        }
+        for uid in plan.no_longer_applies
+    ]
 
-        cancelled.append(
-            InviteEvent(
-                uid=uid,
-                summary=remembered.get("summary")
-                or f"{committee_name}: FEC filing deadline (withdrawn)",
-                description=(
-                    "This deadline no longer applies to this committee following a "
-                    f"change of status to {status}."
-                ),
-                on=on,
-                sequence=plan.sequences.get(uid, 1),
-            )
+    warnings = list(deadlines_result.get("warnings", []))
+    if stale:
+        warnings.append(
+            f"{len(stale)} previously-invited deadline(s) no longer apply to this "
+            "committee. They are NOT removed automatically and are still sitting "
+            "in every recipient's calendar -- delete them by hand, or those "
+            "recipients will keep seeing filings that are not due."
         )
 
     preview = {
@@ -1150,8 +1148,8 @@ async def send_deadline_invites(
             {"date": e.on.isoformat(), "summary": e.summary, "sequence": e.sequence}
             for e in events
         ],
-        "would_withdraw": [{"uid": uid} for uid in plan.to_cancel],
-        "warnings": deadlines_result.get("warnings", []),
+        "no_longer_applies_remove_manually": stale,
+        "warnings": warnings,
     }
 
     if not send:
@@ -1167,54 +1165,42 @@ async def send_deadline_invites(
     except InviteMailerError as exc:
         return {"error": str(exc), **preview, "sent": False}
 
-    try:
-        if events:
-            ics = build_calendar(
-                events,
-                organizer_email=settings.from_address,
-                attendee_emails=addresses,
-                method="REQUEST",
-            )
-            send_message(
-                build_message(
-                    settings=settings,
-                    recipients=addresses,
-                    subject=f"FEC filing deadlines - {committee_name}",
-                    body=(
-                        f"Calendar invitations for {committee_name} "
-                        f"({committee_id}), status: {status}.\n\n"
-                        f"{len(events)} deadline(s) attached."
-                    ),
-                    ics=ics,
-                    method="REQUEST",
-                ),
-                settings,
-            )
+    if not events:
+        preview["sent"] = False
+        preview["note"] = "No deadlines to invite for this committee and window."
+        return preview
 
-        if cancelled:
-            # Sent as its own message: one email cannot carry both a
-            # REQUEST and a CANCEL, since METHOD is set per calendar.
-            ics = build_calendar(
-                cancelled,
-                organizer_email=settings.from_address,
-                attendee_emails=addresses,
-                method="CANCEL",
-            )
-            send_message(
-                build_message(
-                    settings=settings,
-                    recipients=addresses,
-                    subject=f"Withdrawn: FEC filing deadlines - {committee_name}",
-                    body=(
-                        f"{len(cancelled)} deadline(s) no longer apply to "
-                        f"{committee_name} ({committee_id}) following its change "
-                        f"of status to {status}, and have been withdrawn."
-                    ),
-                    ics=ics,
-                    method="CANCEL",
+    stale_note = ""
+    if stale:
+        listed = "\n".join(
+            f"  - {row['date'] or 'date unknown'}  {row['summary']}" for row in stale
+        )
+        stale_note = (
+            f"\n\nThe following {len(stale)} deadline(s) no longer apply and were "
+            "NOT removed from your calendar automatically. Please delete them:\n"
+            f"{listed}"
+        )
+
+    try:
+        ics = build_calendar(
+            events,
+            organizer_email=settings.from_address,
+            attendee_emails=addresses,
+        )
+        send_message(
+            build_message(
+                settings=settings,
+                recipients=addresses,
+                subject=f"FEC filing deadlines - {committee_name}",
+                body=(
+                    f"Calendar invitations for {committee_name} "
+                    f"({committee_id}), status: {status}.\n\n"
+                    f"{len(events)} deadline(s) attached." + stale_note
                 ),
-                settings,
-            )
+                ics=ics,
+            ),
+            settings,
+        )
     except InviteMailerError as exc:
         # Nothing is recorded on failure: marking these as delivered would
         # make the next run skip re-sending them, turning one failed send
@@ -1230,8 +1216,14 @@ async def send_deadline_invites(
 
     preview["sent"] = True
     preview["note"] = (
-        f"Invited {len(events)} deadline(s) and withdrew {len(plan.to_cancel)} "
-        f"for {len(addresses)} recipient(s)."
+        f"Invited {len(events)} deadline(s) to {len(addresses)} recipient(s)."
+        + (
+            f" {len(stale)} earlier deadline(s) no longer apply and must be "
+            "removed from those calendars by hand -- nothing was withdrawn "
+            "automatically."
+            if stale
+            else ""
+        )
     )
     return preview
 

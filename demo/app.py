@@ -1078,9 +1078,12 @@ def send_deadline_invites(
 
     Emails calendar invitations for every deadline the committee owes.
     Re-running after a status change updates the existing entries rather
-    than duplicating them, and withdraws the ones no longer owed -- so a
-    committee that loses its primary has the pre-general and post-general
-    disappear from everyone's calendar.
+    than duplicating them.
+
+    It never removes an event from anyone's calendar. A deadline that
+    stops applying stays there until someone deletes it by hand, so the
+    result lists those under "no_longer_applies_remove_manually" -- always
+    pass that list on to the user, since nothing else will tell them.
 
     IMPORTANT: `send` defaults to False and nothing is emailed until it is
     True. Email cannot be recalled and goes to other people. Always run

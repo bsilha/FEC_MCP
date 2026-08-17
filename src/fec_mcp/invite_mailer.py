@@ -72,27 +72,31 @@ def build_message(
     subject: str,
     body: str,
     ics: str,
-    method: str = "REQUEST",
     filename: str = "fec-deadlines.ics",
 ) -> EmailMessage:
-    """Assemble an invitation email carrying an iCalendar payload."""
+    """Assemble an invitation email carrying an iCalendar payload.
+
+    Always METHOD=REQUEST, matching the calendar body. This tool only
+    invites; it never withdraws an event from a recipient's calendar.
+    """
+    method = "REQUEST"
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings.from_address
     message["To"] = ", ".join(recipients)
     message.set_content(body)
 
-    # The inline calendar part. `method` here must match the METHOD inside
-    # the calendar body -- a mismatch leaves clients treating a withdrawal
-    # as an ordinary attachment.
-    message.add_alternative(ics, subtype="calendar", params={"method": method.upper(), "charset": "UTF-8"})
+    # The inline calendar part. This `method` must match the METHOD inside
+    # the calendar body -- a mismatch is what makes a client fall back to
+    # showing a bare .ics attachment instead of an invitation.
+    message.add_alternative(ics, subtype="calendar", params={"method": method, "charset": "UTF-8"})
 
     message.add_attachment(
         ics.encode("utf-8"),
         maintype="text",
         subtype="calendar",
         filename=filename,
-        params={"method": method.upper()},
+        params={"method": method},
     )
     return message
 

@@ -105,10 +105,11 @@ async def test_send_true_delivers_invitations(wired):
     assert "CRANE FOR CONGRESS" in sent[0]["subject"]
 
 
-async def test_a_status_change_withdraws_the_deadlines_no_longer_owed(wired):
-    """The whole point of the feature: losing the primary must REMOVE the
-    general-election events from recipients' calendars, not merely stop
-    mentioning them."""
+async def test_a_status_change_reports_the_deadlines_no_longer_owed(wired):
+    """Losing the primary drops the general-election reports from the
+    invitation set. Nothing is withdrawn -- this tool never removes an
+    event from someone's calendar -- so they must be named clearly enough
+    for a person to delete them."""
     sent = wired()
     await server.send_deadline_invites(
         "C00614701", status="won_primary", recipients=RECIPIENTS,
@@ -121,47 +122,65 @@ async def test_a_status_change_withdraws_the_deadlines_no_longer_owed(wired):
         state="MI", district="04", send=True,
     )
 
-    assert len(result["would_withdraw"]) == 2, "pre-general and post-general must be withdrawn"
-    cancellations = [m for m in sent if "METHOD:CANCEL" in m["body"]]
-    assert len(cancellations) == 1
-    assert "STATUS:CANCELLED" in cancellations[0]["body"]
+    stale = result["no_longer_applies_remove_manually"]
+    assert len(stale) == 2
+    summaries = " ".join(row["summary"] for row in stale)
+    assert "12G Pre-General" in summaries
+    assert "30G Post-General" in summaries
 
 
-async def test_withdrawals_reproduce_the_original_event_date(wired):
-    """A cancellation carrying the wrong DTSTART can fail to match in
-    clients that do not go purely on UID, leaving the deadline in the
-    calendar."""
+async def test_stale_deadlines_are_reported_with_the_date_they_were_sent_under(wired):
+    """A UID is useless for finding an event by hand; the date and title
+    are what someone actually searches their calendar for."""
+    sent = wired()
+    await server.send_deadline_invites(
+        "C00614701", status="won_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+    result = await server.send_deadline_invites(
+        "C00614701", status="lost_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+
+    dates = {row["date"] for row in result["no_longer_applies_remove_manually"]}
+    assert dates == {"2026-10-22", "2026-12-03"}
+
+
+async def test_nothing_is_ever_cancelled(wired):
+    """The hard requirement: no message this tool sends may withdraw an
+    event from a recipient's calendar."""
+    sent = wired()
+    await server.send_deadline_invites(
+        "C00614701", status="won_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+    await server.send_deadline_invites(
+        "C00614701", status="lost_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+
+    for message in sent:
+        assert "METHOD:CANCEL" not in message["body"]
+        assert "STATUS:CANCELLED" not in message["body"]
+
+
+async def test_the_email_body_spells_out_what_to_delete(wired):
+    """The recipient is the one holding the stale calendar entry, so the
+    instruction has to reach them, not just the tool's caller."""
     sent = wired()
     await server.send_deadline_invites(
         "C00614701", status="won_primary", recipients=RECIPIENTS,
         state="MI", district="04", send=True,
     )
     sent.clear()
-
     await server.send_deadline_invites(
         "C00614701", status="lost_primary", recipients=RECIPIENTS,
         state="MI", district="04", send=True,
     )
-    cancellation = next(m for m in sent if "METHOD:CANCEL" in m["body"])
 
-    # The withdrawn general-election reports keep their real dates.
-    assert "DTSTART;VALUE=DATE:20261022" in cancellation["body"]
-    assert "DTSTART;VALUE=DATE:20261203" in cancellation["body"]
-
-
-async def test_withdrawals_reproduce_the_original_event_summary(wired):
-    sent = wired()
-    await server.send_deadline_invites(
-        "C00614701", status="won_primary", recipients=RECIPIENTS,
-        state="MI", district="04", send=True,
-    )
-    sent.clear()
-    await server.send_deadline_invites(
-        "C00614701", status="lost_primary", recipients=RECIPIENTS,
-        state="MI", district="04", send=True,
-    )
-    cancellation = next(m for m in sent if "METHOD:CANCEL" in m["body"])
-    assert "12G Pre-General Report Due" in cancellation["body"]
+    body = sent[0]["body"]
+    assert "no longer apply" in body
+    assert "delete them" in body.lower()
 
 
 async def test_resending_the_same_status_updates_rather_than_duplicates(wired):
@@ -177,7 +196,7 @@ async def test_resending_the_same_status_updates_rather_than_duplicates(wired):
         state="MI", district="04", send=True,
     )
 
-    assert second["would_withdraw"] == []
+    assert second["no_longer_applies_remove_manually"] == []
     first_seqs = {r["summary"]: r["sequence"] for r in first["would_invite"]}
     for row in second["would_invite"]:
         assert row["sequence"] == first_seqs[row["summary"]] + 1

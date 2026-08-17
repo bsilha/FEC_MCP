@@ -1,13 +1,14 @@
-"""Remember which deadline invitations were sent, so they can be updated
-or withdrawn later.
+"""Remember which deadline invitations were sent, so later sends update
+them instead of duplicating them.
 
-Without this there is no way to withdraw anything. A calendar client only
-removes an event when it receives a CANCEL naming that event's UID, so
-sending a smaller set after a committee loses its primary leaves the
-general-election deadlines sitting in every recipient's calendar
-indefinitely. Knowing what was previously sent is what makes the
-difference between "the deadlines updated" and "some new deadlines
-arrived alongside the stale ones".
+Two jobs. First, SEQUENCE tracking: a calendar client only accepts a
+revision whose SEQUENCE is strictly higher than the one it already holds,
+so the previous value has to be known or every update is silently
+discarded. Second, noticing when a previously-sent deadline stops
+applying -- this tool never withdraws an event from anyone's calendar, so
+a stale entry has to be reported to a person who can remove it. Without
+a record of what was sent, there is nothing to compare against and a
+stale deadline just quietly persists.
 
 The store is a small JSON file keyed by committee. It is deliberately not
 a database: the whole state is a few dozen UIDs per committee, and a
@@ -38,15 +39,21 @@ def _sequence_of(value: Any) -> int:
 
 @dataclass
 class InviteDiff:
-    """What to send this time, relative to what was sent before."""
+    """What to send this time, relative to what was sent before.
+
+    `no_longer_applies` names deadlines previously invited that this
+    committee no longer owes. They are reported, never withdrawn -- this
+    tool does not remove events from other people's calendars -- so
+    somebody has to delete them by hand.
+    """
 
     to_send: list[str] = field(default_factory=list)
-    to_cancel: list[str] = field(default_factory=list)
+    no_longer_applies: list[str] = field(default_factory=list)
     sequences: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
-        return not self.to_send and not self.to_cancel
+        return not self.to_send and not self.no_longer_applies
 
 
 class InviteRegistry:
@@ -122,12 +129,9 @@ class InviteRegistry:
         current = list(dict.fromkeys(current_uids))  # de-duplicate, keep order
 
         sequences = {uid: previous.get(uid, -1) + 1 for uid in current}
-        to_cancel = [uid for uid in previous if uid not in set(current)]
-        # A cancellation is itself a revision and needs its own bump.
-        for uid in to_cancel:
-            sequences[uid] = previous[uid] + 1
+        stale = [uid for uid in previous if uid not in set(current)]
 
-        return InviteDiff(to_send=current, to_cancel=to_cancel, sequences=sequences)
+        return InviteDiff(to_send=current, no_longer_applies=stale, sequences=sequences)
 
     def record(
         self,
@@ -152,8 +156,13 @@ class InviteRegistry:
             stored = {"sequence": diff.sequences.get(uid, 0)}
             stored.update({k: v for k, v in (details.get(uid) or {}).items() if v is not None})
             entry["uids"][uid] = stored
-        for uid in diff.to_cancel:
-            entry["uids"].pop(uid, None)
+
+        # Deadlines that stopped applying stay on the record rather than
+        # being forgotten. The event is still in the recipient's calendar
+        # -- nothing was withdrawn -- so if it becomes applicable again its
+        # SEQUENCE must continue from where it left off. Dropping it would
+        # restart at 0, which a client holding a higher sequence ignores,
+        # making the re-invitation look sent while changing nothing.
 
         if recipients is not None:
             entry["recipients"] = list(dict.fromkeys(recipients))
