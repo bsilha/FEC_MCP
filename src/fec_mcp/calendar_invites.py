@@ -176,11 +176,22 @@ def build_calendar(
         if event.url:
             lines.append(f"URL:{event.url}")
 
+        # RSVP=TRUE is what makes this render as an invitation. It reads
+        # like a courtesy flag -- a filing deadline does not need anyone to
+        # reply -- but the Accept/Decline control IS the RSVP affordance, so
+        # RSVP=FALSE tells the client there is nothing to respond to and it
+        # falls back to showing a plain .ics attachment. Confirmed against
+        # Gmail: with RSVP=FALSE no variant rendered as an invitation,
+        # regardless of event count or whether a file copy was attached.
+        # CUTYPE=INDIVIDUAL and ROLE=REQ-PARTICIPANT are both RFC 5545
+        # defaults, so stating them added nothing except length -- enough
+        # length to push the line past the 75-octet limit and fold it in
+        # the middle of the RSVP parameter. Folding there is legal and
+        # clients are required to unfold, but this is the one line that
+        # decides whether a message renders as an invitation, and it is
+        # not worth depending on every client's unfolding to get it right.
         for email in attendee_emails:
-            lines.append(
-                "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;"
-                f"PARTSTAT=NEEDS-ACTION;RSVP=FALSE:mailto:{email}"
-            )
+            lines.append(f"ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{email}")
 
         # A filing deadline is worth more than a same-morning ping.
         lines.extend(

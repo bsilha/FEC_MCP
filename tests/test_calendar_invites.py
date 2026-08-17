@@ -121,6 +121,34 @@ def test_calendars_can_only_ever_invite_never_withdraw(sample_events):
         )
 
 
+def test_attendees_are_asked_to_rsvp(sample_events):
+    """RSVP=TRUE is what makes a client render an invitation at all. It
+    reads like a courtesy flag on a deadline nobody needs to reply to, but
+    the Accept/Decline control IS the RSVP affordance -- with RSVP=FALSE
+    Gmail showed a bare .ics attachment for every message shape tried."""
+    ics = build_calendar(sample_events, organizer_email="a@b.com", attendee_emails=["c@d.com"])
+    attendee_lines = [line for line in _lines(ics) if line.startswith("ATTENDEE")]
+
+    assert attendee_lines
+    for line in attendee_lines:
+        assert "RSVP=TRUE" in line
+    assert "RSVP=FALSE" not in ics
+
+
+def test_the_attendee_line_is_short_enough_not_to_fold():
+    """Folding mid-parameter is legal and clients must unfold, but this is
+    the line that decides whether a message renders as an invitation --
+    not worth depending on every client unfolding it correctly."""
+    ics = build_calendar(
+        [InviteEvent(uid="u@fec-mcp", summary="S", description="d", on=date(2026, 10, 22))],
+        organizer_email="a@b.com",
+        attendee_emails=["a.fairly.long.address@somecommittee.example.com"],
+    )
+    raw_attendee = [line for line in ics.split("\r\n") if line.startswith("ATTENDEE")]
+    assert len(raw_attendee) == 1
+    assert "RSVP=TRUE:mailto:" in raw_attendee[0], "RSVP must not be split across a fold"
+
+
 def test_every_attendee_gets_an_attendee_line(sample_events):
     ics = build_calendar(
         sample_events,
