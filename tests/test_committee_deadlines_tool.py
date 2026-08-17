@@ -33,22 +33,22 @@ PAC_COMMITTEE = {
 CALENDAR = [
     {"calendar_category_id": 25, "summary": "October Quarterly Report Due",
      "description": "October Quarterly Report due today", "location": "FEC",
-     "state": None, "start_date": "2026-10-15"},
+     "state": None, "start_date": "2026-10-15", "event_id": 8275},
     {"calendar_category_id": 26, "summary": "October Monthly Report Due",
      "description": "October Monthly Report due today", "location": "FEC",
-     "state": None, "start_date": "2026-10-20"},
+     "state": None, "start_date": "2026-10-20", "event_id": 8267},
     {"calendar_category_id": 25, "summary": "12G Pre-General Report Due",
      "description": "The 12-day Pre-General Report due for all general election candidates.",
-     "location": "FEC", "state": None, "start_date": "2026-10-22"},
+     "location": "FEC", "state": None, "start_date": "2026-10-22", "event_id": 8270},
     {"calendar_category_id": 25, "summary": "30G Post-General Report Due",
      "description": "30G Post-General Report Due", "location": "FEC",
-     "state": None, "start_date": "2026-12-03"},
+     "state": None, "start_date": "2026-12-03", "event_id": 8272},
     {"calendar_category_id": 27, "summary": "MI Pre-Primary Report Due",
      "description": "Michigan Pre-Primary Report due", "location": "Michigan",
-     "state": None, "start_date": "2026-07-23"},
+     "state": None, "start_date": "2026-07-23", "event_id": 8394},
     {"calendar_category_id": 27, "summary": "NY Pre-Primary Report Due",
      "description": "New York Pre-Primary Report due", "location": "New York",
-     "state": None, "start_date": "2026-06-11"},
+     "state": None, "start_date": "2026-06-11", "event_id": 8382},
 ]
 
 
@@ -364,6 +364,93 @@ async def test_an_empty_committee_argument_is_rejected(stub):
     stub(CANDIDATE_COMMITTEE)
     result = await server.get_committee_deadlines("   ", status="ongoing")
     assert "error" in result
+
+
+# -- deadlines the FEC publishes once per filing track ----------------------
+
+# The general-election reports bind quarterly and monthly filers alike, so
+# the FEC publishes a copy under each category with its own event_id --
+# exactly as Year-End appears under both. A live preview showed both
+# copies surviving into the deadline list and into the calendar.
+DUAL_TRACK_CALENDAR = [
+    {"calendar_category_id": 25, "summary": "12G Pre-General Report Due",
+     "description": "The 12-day Pre-General Report due for all general election candidates.",
+     "location": "FEC", "state": None, "start_date": "2026-10-22", "event_id": 8270},
+    {"calendar_category_id": 26, "summary": "12G Pre-General Report Due",
+     "description": "The 12-day Pre-General Report due for all general election candidates.",
+     "location": "FEC", "state": None, "start_date": "2026-10-22", "event_id": 8271},
+    {"calendar_category_id": 25, "summary": "30G Post-General Report Due",
+     "description": "30G Post-General Report Due", "location": "FEC",
+     "state": None, "start_date": "2026-12-03", "event_id": 8272},
+    {"calendar_category_id": 26, "summary": "30G Post-General Report Due",
+     "description": "30G Post-General Report Due", "location": "FEC",
+     "state": None, "start_date": "2026-12-03", "event_id": 8273},
+]
+
+
+async def test_a_deadline_published_once_per_track_appears_only_once(stub):
+    """Otherwise the user sees each general-election report twice, and gets
+    two calendar invitations for one filing."""
+    stub(CANDIDATE_COMMITTEE, calendar=DUAL_TRACK_CALENDAR)
+    result = await server.get_committee_deadlines(
+        "C00614701", status="won_primary", state="MI", district="04"
+    )
+    summaries = _summaries(result["deadlines"])
+
+    assert summaries.count("12G Pre-General Report Due") == 1
+    assert summaries.count("30G Post-General Report Due") == 1
+
+
+async def test_a_quarterly_filer_keeps_the_quarterly_track_copy(stub):
+    """Which copy survives decides the event_id, and therefore the calendar
+    UID -- so it must be the one stable for this committee's own track."""
+    stub(CANDIDATE_COMMITTEE, calendar=DUAL_TRACK_CALENDAR)
+    result = await server.get_committee_deadlines(
+        "C00614701", status="won_primary", state="MI", district="04"
+    )
+    rows = {r["deadline"]: r for r in result["deadlines"]}
+
+    assert rows["12G Pre-General Report Due"]["event_id"] == 8270
+    assert rows["30G Post-General Report Due"]["event_id"] == 8272
+
+
+async def test_a_monthly_filer_keeps_the_monthly_track_copy(stub):
+    monthly = dict(CANDIDATE_COMMITTEE, designation="U", filing_frequency="M")
+    stub(monthly, calendar=DUAL_TRACK_CALENDAR)
+    result = await server.get_committee_deadlines("C00401224", status="ongoing")
+    rows = {r["deadline"]: r for r in result["deadlines"]}
+
+    assert rows["12G Pre-General Report Due"]["event_id"] == 8271
+    assert rows["30G Post-General Report Due"]["event_id"] == 8273
+
+
+async def test_deadline_rows_carry_the_event_id_for_stable_calendar_uids(stub):
+    """deadline_uid() prefers the FEC's event_id so a reworded summary
+    updates the existing calendar entry rather than duplicating it. That
+    only works if the tool actually passes the field through."""
+    stub(CANDIDATE_COMMITTEE)
+    result = await server.get_committee_deadlines(
+        "C00614701", status="won_primary", state="MI", district="04"
+    )
+    assert all(row.get("event_id") is not None for row in result["deadlines"])
+
+
+async def test_distinct_deadlines_on_the_same_date_are_not_collapsed(stub):
+    """De-duplication keys on date AND summary -- two different reports
+    falling on one day are two obligations, not one."""
+    same_day = [
+        {"calendar_category_id": 25, "summary": "October Quarterly Report Due",
+         "description": "q", "location": "FEC", "state": None,
+         "start_date": "2026-10-22", "event_id": 1},
+        {"calendar_category_id": 25, "summary": "12G Pre-General Report Due",
+         "description": "g", "location": "FEC", "state": None,
+         "start_date": "2026-10-22", "event_id": 2},
+    ]
+    stub(CANDIDATE_COMMITTEE, calendar=same_day)
+    result = await server.get_committee_deadlines(
+        "C00614701", status="won_primary", state="MI", district="04"
+    )
+    assert len(result["deadlines"]) == 2
 
 
 async def test_result_asks_for_the_race_to_be_confirmed(stub):

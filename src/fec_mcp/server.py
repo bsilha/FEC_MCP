@@ -31,7 +31,13 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .calendar_invites import InviteEvent, build_calendar, events_from_deadlines
-from .deadlines import CommitteeProfile, CommitteeStatus, match_deadline
+from .deadlines import (
+    CATEGORY_MONTHLY,
+    CATEGORY_QUARTERLY,
+    CommitteeProfile,
+    CommitteeStatus,
+    match_deadline,
+)
 from .invite_mailer import InviteMailerError, SMTPSettings, build_message, send_message
 from .invite_registry import InviteRegistry
 from .openfec_client import OpenFECClient, OpenFECError
@@ -813,6 +819,41 @@ async def _find_committee(committee: str) -> tuple[dict[str, Any] | None, dict[s
     return matches[0], None
 
 
+def _dedupe_shared_deadlines(
+    rows: list[dict[str, Any]], filing_frequency: str
+) -> list[dict[str, Any]]:
+    """Collapse deadlines the FEC publishes once per filing track.
+
+    A deadline binding both quarterly and monthly filers is published as
+    two separate calendar records with different event_ids -- the same way
+    Year-End appears under both the Quarterly and Monthly categories. For
+    regular reports the filing-frequency check already picks the right
+    one, but the general-election reports (12G/30G) deliberately bypass
+    that check, since they bind both tracks alike. The consequence was
+    both copies surviving: a duplicated line in the deadline list, and
+    two calendar invitations for one filing.
+
+    Keyed on date plus summary text -- two records naming the same report
+    on the same day are the same obligation, whatever their event_ids say,
+    and the committee files once. The copy filed under the committee's own
+    track wins, so the event_id that ends up in the calendar UID is the
+    stable one for that committee rather than whichever came back first.
+    """
+    preferred = CATEGORY_MONTHLY if (filing_frequency or "").upper() == "M" else CATEGORY_QUARTERLY
+
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row.get("date") or "", (row.get("deadline") or "").strip().lower())
+        existing = best.get(key)
+        if existing is None:
+            best[key] = row
+            continue
+        if row.get("calendar_category_id") == preferred != existing.get("calendar_category_id"):
+            best[key] = row
+
+    return list(best.values())
+
+
 async def _fetch_reporting_calendar(
     start: date, end: date, max_pages: int = 4
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -946,12 +987,19 @@ async def get_committee_deadlines(
             "report_type": decision.family.value if decision.family else None,
             "reason": decision.reason,
             "url": entry.get("url"),
+            # Carried through for the invitation layer: deadline_uid() keys
+            # on the FEC's own event_id so a reworded summary still updates
+            # the existing calendar entry instead of creating a second one.
+            # Omitting it silently downgraded every UID to a content hash.
+            "event_id": entry.get("event_id"),
+            "calendar_category_id": entry.get("calendar_category_id"),
         }
         if decision.applies:
             applies.append({**row, "certain": decision.certain})
         else:
             excluded.append(row)
 
+    applies = _dedupe_shared_deadlines(applies, profile.filing_frequency)
     applies.sort(key=lambda r: r["date"] or "")
 
     unverified = [r for r in applies if not r["certain"]]
