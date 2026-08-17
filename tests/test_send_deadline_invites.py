@@ -127,6 +127,43 @@ async def test_a_status_change_withdraws_the_deadlines_no_longer_owed(wired):
     assert "STATUS:CANCELLED" in cancellations[0]["body"]
 
 
+async def test_withdrawals_reproduce_the_original_event_date(wired):
+    """A cancellation carrying the wrong DTSTART can fail to match in
+    clients that do not go purely on UID, leaving the deadline in the
+    calendar."""
+    sent = wired()
+    await server.send_deadline_invites(
+        "C00614701", status="won_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+    sent.clear()
+
+    await server.send_deadline_invites(
+        "C00614701", status="lost_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+    cancellation = next(m for m in sent if "METHOD:CANCEL" in m["body"])
+
+    # The withdrawn general-election reports keep their real dates.
+    assert "DTSTART;VALUE=DATE:20261022" in cancellation["body"]
+    assert "DTSTART;VALUE=DATE:20261203" in cancellation["body"]
+
+
+async def test_withdrawals_reproduce_the_original_event_summary(wired):
+    sent = wired()
+    await server.send_deadline_invites(
+        "C00614701", status="won_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+    sent.clear()
+    await server.send_deadline_invites(
+        "C00614701", status="lost_primary", recipients=RECIPIENTS,
+        state="MI", district="04", send=True,
+    )
+    cancellation = next(m for m in sent if "METHOD:CANCEL" in m["body"])
+    assert "12G Pre-General Report Due" in cancellation["body"]
+
+
 async def test_resending_the_same_status_updates_rather_than_duplicates(wired):
     """Same UIDs with a higher SEQUENCE -- a client treats that as a
     revision of the event it already has."""

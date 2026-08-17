@@ -284,3 +284,37 @@ def test_forget_clears_a_committees_history(registry):
 def test_plan_deduplicates_repeated_uids(registry):
     plan = registry.plan("C1", ["uid-a", "uid-a", "uid-b"])
     assert plan.to_send == ["uid-a", "uid-b"]
+
+
+def test_registry_remembers_each_events_date_and_summary(registry):
+    """So a withdrawal can reproduce the original event rather than
+    inventing a date for it."""
+    plan = registry.plan("C1", ["uid-a"])
+    registry.record(
+        "C1", plan, details={"uid-a": {"date": "2026-10-22", "summary": "12G Pre-General"}}
+    )
+    stored = registry.sent_events("C1")["uid-a"]
+
+    assert stored["date"] == "2026-10-22"
+    assert stored["summary"] == "12G Pre-General"
+    assert stored["sequence"] == 0
+
+
+def test_a_registry_written_before_dates_were_stored_still_works(tmp_path):
+    """Older entries stored a bare sequence integer. Those must keep
+    working -- failing to read them would orphan every event already in
+    someone's calendar, with no way left to withdraw it."""
+    path = tmp_path / "sent.json"
+    path.write_text('{"C1": {"uids": {"legacy-uid": 3}, "recipients": []}}')
+    registry = InviteRegistry(path=path)
+
+    assert registry.sent_uids("C1") == {"legacy-uid": 3}
+    assert registry.sent_events("C1")["legacy-uid"] == {
+        "sequence": 3,
+        "date": None,
+        "summary": None,
+    }
+    # ...and it can still be cancelled, with a properly bumped sequence.
+    plan = registry.plan("C1", [])
+    assert plan.to_cancel == ["legacy-uid"]
+    assert plan.sequences["legacy-uid"] == 4

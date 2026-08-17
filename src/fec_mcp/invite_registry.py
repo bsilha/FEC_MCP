@@ -25,6 +25,17 @@ from typing import Any
 DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "data" / "sent_invites.json"
 
 
+def _sequence_of(value: Any) -> int:
+    """Read a stored SEQUENCE from either the current dict form or the
+    bare integer earlier versions wrote."""
+    if isinstance(value, dict):
+        return int(value.get("sequence", 0))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 @dataclass
 class InviteDiff:
     """What to send this time, relative to what was sent before."""
@@ -61,9 +72,35 @@ class InviteRegistry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self._data, indent=2, sort_keys=True))
 
+    def _raw_uids(self, committee_id: str) -> dict[str, Any]:
+        return self._data.get(committee_id.upper(), {}).get("uids", {})
+
     def sent_uids(self, committee_id: str) -> dict[str, int]:
         """UID -> last SEQUENCE sent, for one committee."""
-        return dict(self._data.get(committee_id.upper(), {}).get("uids", {}))
+        return {uid: _sequence_of(value) for uid, value in self._raw_uids(committee_id).items()}
+
+    def sent_events(self, committee_id: str) -> dict[str, dict[str, Any]]:
+        """UID -> what was sent for it: sequence, date, and summary.
+
+        Withdrawing an event should reproduce its original date and
+        summary rather than inventing new ones. RFC 5545 matches a
+        cancellation on UID, so a wrong DTSTART is not supposed to matter,
+        but clients vary in how strictly they follow that and a
+        cancellation that silently fails to match leaves the event sitting
+        in someone's calendar -- the exact outcome this is meant to
+        prevent.
+
+        Tolerates the older format, where the stored value was a bare
+        sequence integer, so an existing registry keeps working rather
+        than orphaning every event recorded before this change.
+        """
+        events: dict[str, dict[str, Any]] = {}
+        for uid, value in self._raw_uids(committee_id).items():
+            if isinstance(value, dict):
+                events[uid] = dict(value)
+            else:
+                events[uid] = {"sequence": value, "date": None, "summary": None}
+        return events
 
     def recipients(self, committee_id: str) -> list[str]:
         return list(self._data.get(committee_id.upper(), {}).get("recipients", []))
@@ -97,15 +134,24 @@ class InviteRegistry:
         committee_id: str,
         diff: InviteDiff,
         recipients: list[str] | None = None,
+        details: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Commit a completed send. Call only after delivery succeeded --
         recording first would make a failed send look delivered, and the
-        next run would then skip re-sending it."""
+        next run would then skip re-sending it.
+
+        `details` carries each UID's date and summary so a later
+        withdrawal can reproduce the original event rather than inventing
+        one.
+        """
         key = committee_id.upper()
         entry = self._data.setdefault(key, {"uids": {}, "recipients": []})
+        details = details or {}
 
         for uid in diff.to_send:
-            entry["uids"][uid] = diff.sequences.get(uid, 0)
+            stored = {"sequence": diff.sequences.get(uid, 0)}
+            stored.update({k: v for k, v in (details.get(uid) or {}).items() if v is not None})
+            entry["uids"][uid] = stored
         for uid in diff.to_cancel:
             entry["uids"].pop(uid, None)
 

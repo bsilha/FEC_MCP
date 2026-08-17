@@ -1104,6 +1104,7 @@ async def send_deadline_invites(
     deadlines = deadlines_result["deadlines"]
 
     registry = InviteRegistry()
+    previously_sent = registry.sent_events(committee_id)
     events = events_from_deadlines(committee_id, committee_name, deadlines)
     plan = registry.plan(committee_id, [e.uid for e in events])
 
@@ -1111,19 +1112,34 @@ async def send_deadline_invites(
     # whose SEQUENCE is not strictly higher than the last is silently
     # ignored by calendar clients, which is indistinguishable from success.
     events = [replace(e, sequence=plan.sequences.get(e.uid, e.sequence)) for e in events]
-    cancelled = [
-        InviteEvent(
-            uid=uid,
-            summary=f"{committee_name}: FEC filing deadline (withdrawn)",
-            description=(
-                "This deadline no longer applies to this committee following a "
-                f"change of status to {status}."
-            ),
-            on=date.today(),
-            sequence=plan.sequences.get(uid, 1),
+    # A withdrawal reproduces the original event's date and summary where
+    # the registry recorded them. Matching is by UID per RFC 5545, but
+    # clients differ in how strictly they honor that, and a cancellation
+    # that fails to match leaves the deadline sitting in the calendar --
+    # the precise failure this is meant to prevent. Falls back to today's
+    # date only for events recorded before the registry stored dates.
+    cancelled = []
+    for uid in plan.to_cancel:
+        remembered = previously_sent.get(uid) or {}
+        original_date = remembered.get("date")
+        try:
+            on = date.fromisoformat(original_date) if original_date else date.today()
+        except (TypeError, ValueError):
+            on = date.today()
+
+        cancelled.append(
+            InviteEvent(
+                uid=uid,
+                summary=remembered.get("summary")
+                or f"{committee_name}: FEC filing deadline (withdrawn)",
+                description=(
+                    "This deadline no longer applies to this committee following a "
+                    f"change of status to {status}."
+                ),
+                on=on,
+                sequence=plan.sequences.get(uid, 1),
+            )
         )
-        for uid in plan.to_cancel
-    ]
 
     preview = {
         "committee": deadlines_result["committee"],
@@ -1205,7 +1221,12 @@ async def send_deadline_invites(
         # into a permanently missing calendar entry.
         return {"error": str(exc), **preview, "sent": False}
 
-    registry.record(committee_id, plan, recipients=addresses)
+    registry.record(
+        committee_id,
+        plan,
+        recipients=addresses,
+        details={e.uid: {"date": e.on.isoformat(), "summary": e.summary} for e in events},
+    )
 
     preview["sent"] = True
     preview["note"] = (
