@@ -1328,40 +1328,25 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
     return {"text": text, "trace": trace, "stop_reason": last_message.stop_reason}
 
 
-def _annotate_matches(matches: list[dict], query: str) -> list[dict]:  # pragma: no cover
-    """Order search results and explain the ones that need explaining.
+def _name_matches_only(matches: list[dict], query: str) -> tuple[list[dict], int]:
+    """Keep only committees whose own NAME contains the query.
 
-    OpenFEC's committee search is full-text and also matches the LINKED
-    CANDIDATE's name -- which it does not return on the committee record.
-    Searching "abdul" therefore returns JAMAL FOR CONGRESS, matching a
-    candidate whose surname is Abdul-something, with nothing in the row to
-    show why. The match is legitimate; it is just invisible, and an
-    unexplained row in a picker reads as a bug.
+    OpenFEC's committee endpoint is full-text and also matches the linked
+    candidate's name, which it doesn't return on the record -- so
+    searching "abdul" comes back with JAMAL FOR CONGRESS, whose candidate
+    is Abdul-something. Correct by OpenFEC's definition, but this field
+    asks for a committee name or ID, and results matching neither are
+    noise here.
 
-    So: rows matching by name come first, and rows that don't get their
-    candidate's name looked up to account for themselves. Filtering them
-    out instead was the obvious alternative and would be worse -- someone
-    may know the candidate rather than the committee's name, and silently
-    dropping those results is a loss nobody can see.
+    Returns (kept, dropped_count). The count matters: a search that
+    silently shows nothing after OpenFEC returned seven results looks
+    broken, so the caller says how many were set aside and why.
     """
     query = (query or "").strip().lower()
-    annotated: list[dict] = []
-    lookups_left = 5  # bound the extra requests; usually only a row or two
-
-    for match in matches:
-        by_name = query in (match.get("name") or "").lower()
-        why = None
-        if not by_name and lookups_left:
-            for candidate_id in (match.get("candidate_ids") or [])[:1]:
-                lookups_left -= 1
-                detail = _run_async(server.get_candidate, candidate_id=candidate_id)
-                found = detail.get("results") or []
-                if found:
-                    why = found[0].get("name")
-        annotated.append({**match, "_by_name": by_name, "_why": why})
-
-    annotated.sort(key=lambda row: not row["_by_name"])
-    return annotated
+    if not query:
+        return list(matches), 0
+    kept = [m for m in matches if query in (m.get("name") or "").lower()]
+    return kept, len(matches) - len(kept)
 
 
 def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit UI
@@ -1395,9 +1380,9 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
         "Committee name or FEC ID",
         placeholder="Eli Crane for Congress    —or—    C00784934",
         help=(
-            "FEC committee search also matches the candidate's name, so a "
-            "committee named for someone's first name can be found by their "
-            "surname. Those results are grouped separately below."
+            "Matches the committee's own name or FEC ID. The FEC's search also "
+            "returns committees matching elsewhere in their records, such as the "
+            "candidate's name; those are filtered out here."
         ),
         key="dl_query",
     )
@@ -1411,46 +1396,41 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
         if "error" in found:
             st.error(found["error"])
         else:
-            # Annotated once here, not on every rerun -- it costs a request
-            # per unexplained row and the answer can't change until the
-            # next search.
-            st.session_state["dl_matches"] = _annotate_matches(
-                found.get("results") or [], text
-            )
+            # An ID lookup is already exact; only a name search needs
+            # narrowing to the committee's own name.
+            results = found.get("results") or []
+            if re.fullmatch(r"C\d{8}", text, re.IGNORECASE):
+                kept, dropped = results, 0
+            else:
+                kept, dropped = _name_matches_only(results, text)
+            st.session_state["dl_matches"] = kept
+            st.session_state["dl_dropped"] = dropped
             st.rerun()
 
     matches = st.session_state.get("dl_matches")
+    dropped = st.session_state.get("dl_dropped", 0)
     if matches is not None:
         if not matches:
-            st.warning("No committee matched that. Try the FEC ID, or fewer words.")
+            st.warning("No committee name matched that. Try the FEC ID, or fewer words.")
         elif len(matches) == 1:
             st.session_state["dl_committee"] = matches[0]
             st.session_state.pop("dl_matches", None)
             st.rerun()
         else:
-            by_name = [m for m in matches if m.get("_by_name", True)]
-            by_candidate = [m for m in matches if not m.get("_by_name", True)]
-
-            st.caption(
-                f"{len(by_name)} match{'' if len(by_name) == 1 else 'es'} — pick one:"
-                if by_name
-                else "No committee name matched — see below."
-            )
-            for i, match in enumerate(by_name):
+            st.caption(f"{len(matches)} matches — pick one:")
+            for i, match in enumerate(matches):
                 _match_button(match, f"dl_match_{i}")
 
-            # Kept, but out of the way. The field asks for a committee name
-            # or ID, so a row matching neither is a distraction in the main
-            # list -- but FEC search also matches the linked candidate's
-            # name, and someone who knows the candidate and not the
-            # committee still needs a way through. Collapsed by default:
-            # available when wanted, silent when not.
-            if by_candidate:
-                with st.expander(
-                    f"{len(by_candidate)} more matched a candidate's name, not the committee's"
-                ):
-                    for i, match in enumerate(by_candidate):
-                        _match_button(match, f"dl_cand_match_{i}")
+        if dropped:
+            # Said out loud rather than left invisible. OpenFEC returned
+            # these and this field chose not to show them; a search that
+            # quietly returns three of seven results looks like a bug in
+            # exactly the way a stated filter does not.
+            st.caption(
+                f"{dropped} other committee(s) matched elsewhere in the FEC's records "
+                "(usually the candidate's name) and are not shown — this field "
+                "searches committee names and IDs only."
+            )
     return None
 
 
@@ -1460,9 +1440,6 @@ def _match_button(match: dict[str, Any], key: str) -> None:  # pragma: no cover 
         f"{match.get('name')} · {match.get('committee_id')} · "
         f"{match.get('state') or '—'} · {match.get('designation_full') or ''}"
     )
-    if match.get("_why"):
-        label += f"  ·  candidate: {match['_why']}"
-
     if not st.button(label, key=key, use_container_width=True):
         return
 

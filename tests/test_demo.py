@@ -259,6 +259,64 @@ def test_jurisdiction_label_falls_back_to_the_code_for_unknown_jurisdictions():
     assert demo_app._jurisdiction_label("zz") == "ZZ"
 
 
+# -- committee search filtering ---------------------------------------------
+
+# Verbatim from a live "abdul" search. OpenFEC's committee endpoint is
+# full-text and also matches the linked candidate's name, which it does
+# not return on the record -- both JAMAL rows are that case.
+ABDUL_SEARCH_RESULTS = [
+    {"committee_id": "C00958066", "name": "ABDUL FOR MICHIGAN VICTORY FUND"},
+    {"committee_id": "C00902668", "name": "ABDUL FOR U.S. SENATE"},
+    {"committee_id": "C00936682", "name": "ABDULLE FOR CONGRESS COMMITTEE"},
+    {"committee_id": "C00238931", "name": "ABDUL-RAHMAN, SOLOMON"},
+    {"committee_id": "C00248104", "name": "COMMITTEE TO ELECT ABDUL ALIM MUHAMMAD"},
+    {"committee_id": "C00631234", "name": "JAMAL FOR CONGRESS"},
+    {"committee_id": "C00682351", "name": "JAMAL FOR CONGRESS"},
+]
+
+
+def test_committee_search_keeps_only_committee_name_matches():
+    """The field asks for a committee name or ID, so a committee matching
+    only somewhere else in the FEC's records is not an answer to it."""
+    kept, dropped = demo_app._name_matches_only(ABDUL_SEARCH_RESULTS, "abdul")
+
+    assert [c["committee_id"] for c in kept] == [
+        "C00958066", "C00902668", "C00936682", "C00238931", "C00248104",
+    ]
+    assert dropped == 2
+
+
+def test_committee_search_filtering_is_case_insensitive():
+    kept, _ = demo_app._name_matches_only(ABDUL_SEARCH_RESULTS, "ABDUL")
+    assert len(kept) == 5
+
+
+def test_committee_search_matches_a_name_substring():
+    """ABDULLE contains "abdul" -- a prefix search would drop it, and it
+    is a legitimate committee-name match."""
+    kept, _ = demo_app._name_matches_only(ABDUL_SEARCH_RESULTS, "abdul")
+    assert any(c["name"] == "ABDULLE FOR CONGRESS COMMITTEE" for c in kept)
+
+
+def test_committee_search_reports_how_many_it_set_aside():
+    """A search that quietly shows three of seven results looks broken;
+    the count is what lets the caller say so."""
+    _, dropped = demo_app._name_matches_only(ABDUL_SEARCH_RESULTS, "jamal")
+    assert dropped == 5
+
+
+def test_committee_search_with_no_name_matches_returns_nothing_kept():
+    kept, dropped = demo_app._name_matches_only(ABDUL_SEARCH_RESULTS, "zzz")
+    assert kept == []
+    assert dropped == len(ABDUL_SEARCH_RESULTS)
+
+
+def test_committee_search_handles_a_missing_name_field():
+    kept, dropped = demo_app._name_matches_only([{"committee_id": "C1"}], "abdul")
+    assert kept == []
+    assert dropped == 1
+
+
 def test_jurisdiction_sort_key_puts_federal_first_then_states_alphabetically():
     jurisdictions = ["ny", "federal", "ca", "ga"]
     ordered = sorted(jurisdictions, key=demo_app._jurisdiction_sort_key)
