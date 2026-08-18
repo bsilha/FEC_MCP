@@ -30,6 +30,7 @@ import streamlit as st
 from anthropic import Anthropic, beta_tool
 
 from fec_mcp import server
+from fec_mcp.committee_roster import UNSET_STATUS, CommitteeRoster, cycle_horizon_months
 from fec_mcp.rulebook_index import DEFAULT_RULEBOOKS_DIR
 from fec_mcp.states import US_STATE_NAMES
 
@@ -169,7 +170,17 @@ DEADLINE_CSS = f"""
 .fec-dl-row:last-child {{ border-bottom: none; border-radius: 0 0 7px 7px; }}
 .fec-dl-wrap {{ border: 1px solid #d8dee3; border-radius: 8px; overflow: hidden; }}
 .fec-dl-date {{ font-weight: 700; width: 84px; flex-shrink: 0; color: {BRAND_NAVY_MID}; }}
+/* Fixed width so committee names line up as a column down the page --
+   with several committees, "whose is this" is what gets scanned for. */
+.fec-dl-who {{
+    width: 200px; flex-shrink: 0; font-weight: 600; font-size: 0.79rem;
+    color: {BRAND_STEEL}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
 .fec-dl-name {{ flex: 1; color: {BRAND_NAVY_DARK}; }}
+.fec-dl-month {{
+    background: #eef2f6; padding: 5px 11px; font-size: 0.66rem; font-weight: 700;
+    letter-spacing: .06em; color: {BRAND_STEEL}; text-transform: uppercase;
+}}
 .fec-dl-kind {{
     font-size: 0.62rem; font-weight: 700; letter-spacing: .03em;
     padding: 2px 7px; border-radius: 4px; background: #e8eef4; color: {BRAND_STEEL};
@@ -187,16 +198,22 @@ DEADLINE_CSS = f"""
 """
 
 
-def _deadline_row_html(row: dict[str, Any]) -> str:
-    """One deadline as a table row."""
+def _agenda_row_html(row: dict[str, Any]) -> str:
+    """One deadline in the combined agenda.
+
+    The committee name is its own fixed-width column rather than part of
+    the description: with several committees, "whose is this" is the first
+    thing being scanned for, and it has to line up down the page.
+    """
     family = (row.get("report_type") or "").replace("_", "-").upper() or "DEADLINE"
     is_general = "GENERAL" in family
     flag = "" if row.get("certain", True) else '<span class="fec-dl-flag">CONFIRM</span>'
     return (
         '<div class="fec-dl-row">'
         f'<span class="fec-dl-date">{html.escape(str(row.get("date") or ""))}</span>'
+        f'<span class="fec-dl-who">{html.escape(str(row.get("_committee") or ""))}</span>'
         f'<span class="fec-dl-name">{html.escape(str(row.get("deadline") or ""))}</span>'
-        f'{flag}'
+        f"{flag}"
         f'<span class="fec-dl-kind{" gen" if is_general else ""}">{html.escape(family)}</span>'
         "</div>"
     )
@@ -1457,126 +1474,185 @@ def _match_button(match: dict[str, Any], key: str) -> None:  # pragma: no cover 
     st.rerun()
 
 
-def _status_step(committee: dict[str, Any]) -> tuple[str, str | None, str | None]:  # pragma: no cover
-    """Step 2: lifecycle status, plus the race for a candidate committee."""
-    st.markdown("**2 &middot; Where is it in the cycle?**", unsafe_allow_html=True)
+def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
+    """One committee on the roster, with its own status and race.
 
-    is_candidate_committee = (committee.get("designation") or "").upper() in {"P", "A"}
-    choices = (
-        [c for c in STATUS_CHOICES if c[0] != "ongoing"]
-        if is_candidate_committee
-        else [c for c in STATUS_CHOICES if c[0] in {"ongoing", "terminating"}]
-    )
+    Status is per committee and cannot be shared: each one sits somewhere
+    different in its cycle, and that alone decides its deadline set.
+    """
+    name_col, status_col, state_col, dist_col, drop_col = st.columns([4, 4, 1.2, 1.2, 0.8])
 
-    status = st.radio(
-        "Lifecycle status",
-        options=[value for value, _, _ in choices],
-        format_func=lambda v: f"{_STATUS_LABELS[v]} — {_STATUS_HINTS[v]}",
-        key="dl_status",
-        label_visibility="collapsed",
-    )
+    with name_col:
+        frequency = (entry.filing_frequency or "").upper()
+        readable = {"Q": "quarterly", "M": "monthly"}.get(frequency, "unknown")
+        st.markdown(
+            f"**{html.escape(entry.name)}**<br>"
+            f'<span style="color:{BRAND_STEEL};font-size:0.72rem">'
+            f"{entry.committee_id} · {readable} filer</span>",
+            unsafe_allow_html=True,
+        )
 
-    state = district = None
-    if is_candidate_committee:
-        # Only asked of candidate committees: a PAC has no single race, and
-        # monthly-filing PACs owe no state-timed reports at all, so the
-        # field would be noise there.
-        left, right = st.columns(2)
-        with left:
-            state = st.text_input(
-                "Race state", value=committee.get("state") or "", max_chars=2,
-                help="Two-letter state of the FEDERAL race — this is where the race is, "
-                     "not a state campaign-finance jurisdiction.",
-                key="dl_state",
-            ).strip().upper() or None
-        with right:
-            district = st.text_input(
-                "District (House only)", placeholder="02", max_chars=2, key="dl_district"
-            ).strip() or None
+    with status_col:
+        choices = (
+            [c for c in STATUS_CHOICES if c[0] != "ongoing"]
+            if entry.is_candidate_committee
+            else [c for c in STATUS_CHOICES if c[0] in {"ongoing", "terminating"}]
+        )
+        options = [UNSET_STATUS] + [value for value, _, _ in choices]
+        current = entry.status if entry.status in options else UNSET_STATUS
+        picked = st.selectbox(
+            "Status",
+            options=options,
+            index=options.index(current),
+            # Never defaulted: a guessed status yields a complete,
+            # confident, wrong schedule, and nothing about a wrong
+            # schedule looks wrong.
+            format_func=lambda v: "— pick where it is —" if not v else _STATUS_LABELS[v],
+            key=f"roster_status_{entry.committee_id}",
+            label_visibility="collapsed",
+        )
+        if picked != entry.status:
+            _roster().update(entry.committee_id, status=picked)
+            st.rerun()
+        if entry.has_status:
+            st.caption(_STATUS_HINTS[entry.status])
+            if entry.status_set_on:
+                st.caption(f"set {entry.status_set_on}")
 
-        if not state:
-            st.caption(
-                "Without a state, pre-primary and runoff deadlines can't be checked — "
-                "everything else still works. OpenFEC usually can't tell us the race, "
-                "so this is worth filling in."
-            )
-    return status, state, district
+    with state_col:
+        state = st.text_input(
+            "State", value=entry.state or "", max_chars=2,
+            key=f"roster_state_{entry.committee_id}",
+            label_visibility="collapsed", placeholder="ST",
+            disabled=not entry.is_candidate_committee,
+        ).strip().upper()
+    with dist_col:
+        district = st.text_input(
+            "District", value=entry.district or "", max_chars=2,
+            key=f"roster_district_{entry.committee_id}",
+            label_visibility="collapsed", placeholder="00",
+            disabled=not entry.is_candidate_committee,
+        ).strip()
+
+    if entry.is_candidate_committee and (
+        state != (entry.state or "") or district != (entry.district or "")
+    ):
+        _roster().update(entry.committee_id, state=state, district=district)
+        st.rerun()
+
+    with drop_col:
+        if st.button("✕", key=f"roster_drop_{entry.committee_id}", help="Remove"):
+            _roster().remove(entry.committee_id)
+            st.rerun()
 
 
-def _render_deadlines(result: dict[str, Any]) -> None:  # pragma: no cover
-    """Step 3: the deadline list, what was excluded, and any warnings."""
-    deadlines = result.get("deadlines") or []
-    st.markdown("**3 &middot; Deadlines**", unsafe_allow_html=True)
+def _roster() -> CommitteeRoster:  # pragma: no cover -- Streamlit UI
+    """One roster per session, reloaded from disk on first use."""
+    if "dl_roster" not in st.session_state:
+        st.session_state["dl_roster"] = CommitteeRoster()
+    return st.session_state["dl_roster"]
 
-    if not deadlines:
-        st.info("No filing deadlines fall in this window for this committee.")
+
+def _combined_agenda(entries) -> None:  # pragma: no cover -- Streamlit UI
+    """Every deadline across every committee, in date order.
+
+    The question a person with several committees actually asks is "what
+    is due next, and for whom" -- which no per-committee view answers.
+    """
+    months = cycle_horizon_months()
+    ready = [e for e in entries if e.has_status]
+
+    rows: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for entry in ready:
+        result = _run_async(
+            server.get_committee_deadlines,
+            committee=entry.committee_id, status=entry.status,
+            state=entry.state, district=entry.district, months_ahead=months,
+        )
+        if "error" in result:
+            problems.append(f"{entry.name}: {result['error']}")
+            continue
+        for deadline in result.get("deadlines") or []:
+            rows.append({**deadline, "_committee": entry.name})
+        for warning in result.get("warnings") or []:
+            problems.append(f"{entry.name}: {warning}")
+
+    for problem in problems:
+        st.warning(problem)
+
+    if not rows:
+        if ready:
+            st.info("No filing deadlines fall in this window for these committees.")
         return
 
-    unverified = [d for d in deadlines if not d.get("certain", True)]
+    rows.sort(key=lambda r: (r.get("date") or "", r["_committee"]))
+
+    # Grouped by month so a long list stays scannable -- a full cycle can
+    # run to two dozen rows across several committees.
+    html_parts: list[str] = []
+    current_month = None
+    for row in rows:
+        month = (row.get("date") or "")[:7]
+        if month != current_month:
+            current_month = month
+            try:
+                label = date.fromisoformat(row["date"]).strftime("%B %Y")
+            except (TypeError, ValueError):
+                label = month or "Undated"
+            html_parts.append(f'<div class="fec-dl-month">{html.escape(label)}</div>')
+        html_parts.append(_agenda_row_html(row))
+
     st.markdown(
-        '<div class="fec-dl-wrap">'
-        + "".join(_deadline_row_html(row) for row in deadlines)
-        + "</div>",
-        unsafe_allow_html=True,
+        f'<div class="fec-dl-wrap">{"".join(html_parts)}</div>', unsafe_allow_html=True
     )
 
+    unverified = [r for r in rows if not r.get("certain", True)]
     if unverified:
         st.caption(
             f"{len(unverified)} marked CONFIRM could not be settled automatically — "
-            "they are listed rather than hidden so nothing is missed, but check whether "
-            "each applies."
+            "listed rather than hidden so nothing is missed, but check whether each applies."
         )
 
-    excluded = result.get("excluded") or []
-    if excluded:
-        with st.expander(f"Why {len(excluded)} other deadlines don't apply"):
-            for row in excluded:
-                st.markdown(
-                    f"- **{row.get('date')}** {row.get('deadline')} — "
-                    f"_{row.get('reason')}_"
-                )
 
-    for warning in result.get("warnings") or []:
-        st.warning(warning)
+def _invite_step(entries) -> None:  # pragma: no cover -- Streamlit UI
+    """Send invitations for ONE committee at a time.
 
-
-def _invite_step(committee: dict[str, Any], status: str,
-                 state: str | None, district: str | None) -> None:  # pragma: no cover
-    """Step 4: send calendar invitations.
-
-    Two presses, never one. Email goes to other people and cannot be
-    recalled, so the preview is mandatory and the send button only appears
-    once there is a preview on screen to have read.
+    Recipients differ per committee -- each campaign has its own treasurer
+    and counsel -- so a single "send everything to everyone" action would
+    email one client's filing schedule to another client's staff.
     """
-    st.markdown("**4 &middot; Send calendar invites**", unsafe_allow_html=True)
+    ready = [e for e in entries if e.has_status]
+    if not ready:
+        return
+
+    st.markdown("**Send calendar invites**", unsafe_allow_html=True)
+    by_label = {f"{e.name} · {_STATUS_LABELS[e.status]}": e for e in ready}
+    chosen_label = st.selectbox("Committee", options=list(by_label), key="dl_invite_committee")
+    entry = by_label[chosen_label]
 
     raw = st.text_area(
         "Recipients",
         placeholder="treasurer@campaign.com, counsel@firm.com",
-        help="One or more email addresses, separated by commas or new lines.",
-        key="dl_recipients",
+        help="Separate addresses with commas or new lines. Sent for this committee only.",
+        key=f"dl_recipients_{entry.committee_id}",
         height=68,
     )
     recipients = [a.strip() for a in re.split(r"[,\s]+", raw or "") if a.strip()]
 
-    # Deliberately NOT disabled on `recipients`. Streamlit only commits a
-    # text area's value on blur, so a button disabled from that value is
-    # still disabled at the moment someone finishes typing and clicks --
-    # the click lands on a dead control and nothing happens, and it takes
-    # a second click to work. Verified in the running app. The buttons stay
-    # live and validate on click instead, so one click always does
-    # something and says why if it can't.
+    # Not disabled on `recipients`: Streamlit commits a text area only on
+    # blur, so a button disabled from that value is still disabled at the
+    # moment someone finishes typing and clicks.
     left, right = st.columns(2)
     with left:
         preview_clicked = st.button("Preview invitations", use_container_width=True)
     preview = st.session_state.get("dl_preview")
+    fresh = preview if (preview or {}).get("_for") == entry.committee_id else None
     with right:
-        # Safe to disable from session state, which is settled before the
-        # button renders -- unlike a widget value typed in this same run.
         send_clicked = st.button(
             f"Send to {len(recipients)} recipient(s)" if recipients else "Send invitations",
             type="primary", use_container_width=True,
-            disabled=not (preview and not preview.get("error") and preview.get("would_invite")),
+            disabled=not (fresh and not fresh.get("error") and fresh.get("would_invite")),
         )
 
     if preview_clicked or send_clicked:
@@ -1585,72 +1661,92 @@ def _invite_step(committee: dict[str, Any], status: str,
         else:
             sending = bool(send_clicked)
             with st.spinner("Sending..." if sending else "Building invitations..."):
-                st.session_state["dl_preview"] = _run_async(
+                result = _run_async(
                     server.send_deadline_invites,
-                    committee=committee["committee_id"], status=status,
-                    recipients=recipients, state=state, district=district, send=sending,
+                    committee=entry.committee_id, status=entry.status,
+                    recipients=recipients, state=entry.state, district=entry.district,
+                    months_ahead=cycle_horizon_months(), send=sending,
                 )
+            st.session_state["dl_preview"] = {**result, "_for": entry.committee_id}
             st.rerun()
 
-    if not preview:
+    if not fresh:
         st.caption("Preview first — nothing is emailed until you send.")
         return
 
-    if preview.get("error"):
-        st.error(preview["error"])
+    if fresh.get("error"):
+        st.error(fresh["error"])
 
-    stale = preview.get("no_longer_applies_remove_manually") or []
+    stale = fresh.get("no_longer_applies_remove_manually") or []
     if stale:
-        # The app never withdraws a calendar event, so this notice is the
-        # only thing standing between someone and a filing they don't owe.
-        # Rendered as an error rather than a warning for that reason, and
-        # it names the dates so the entries can actually be found.
+        # Nothing withdraws these, so this notice is the only thing
+        # between a losing campaign and a filing nobody owes.
         st.error(
             f"**{len(stale)} deadline(s) no longer apply but are still in recipients' "
             "calendars.** Nothing is removed automatically — ask them to delete:\n\n"
-            + "\n".join(f"- {row.get('date') or 'date unknown'} — {row.get('summary')}" for row in stale)
+            + "\n".join(
+                f"- {row.get('date') or 'date unknown'} — {row.get('summary')}" for row in stale
+            )
         )
 
-    if preview.get("sent"):
-        st.success(preview.get("note") or "Invitations sent.")
-    elif preview.get("would_invite"):
+    if fresh.get("sent"):
+        st.success(fresh.get("note") or "Invitations sent.")
+    elif fresh.get("would_invite"):
         st.info(
-            f"Ready to send {len(preview['would_invite'])} invitation(s) to "
-            f"{', '.join(preview.get('recipients') or [])}."
+            f"Ready to send {len(fresh['would_invite'])} invitation(s) for "
+            f"{entry.name} to {', '.join(fresh.get('recipients') or [])}."
         )
 
 
 def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
-    """The whole deadline workflow, one committee at a time."""
+    """Several committees, each with its own status, in one agenda."""
     st.markdown(DEADLINE_CSS, unsafe_allow_html=True)
+    roster = _roster()
+    entries = roster.entries()
 
-    committee = _committee_step()
-    if not committee:
-        st.caption(
-            "Find a committee to see which FEC filing deadlines bind it, and put "
-            "them on people's calendars."
-        )
+    st.markdown("**Your committees**", unsafe_allow_html=True)
+    if entries:
+        for i, entry in enumerate(entries):
+            _roster_row(entry, i)
+            st.divider()
+    else:
+        st.caption("No committees yet — add one below to see what it owes.")
+
+    # Stays open once someone is adding: people arrive with several
+    # committees at once, and collapsing after each one would cost a click
+    # per committee to reopen.
+    with st.expander(
+        "＋ Add a committee", expanded=st.session_state.get("dl_add_open", not entries)
+    ):
+        picked = _committee_step()
+        if picked:
+            roster.add(picked)
+            st.session_state["dl_add_open"] = True
+            for key in ("dl_committee", "dl_matches", "dl_dropped", "dl_query"):
+                st.session_state.pop(key, None)
+            st.rerun()
+
+    if not entries:
         return
 
-    st.divider()
-    status, state, district = _status_step(committee)
+    missing = [e for e in entries if not e.has_status]
+    if missing:
+        # Named, not merely counted: with several committees it has to be
+        # obvious WHICH one is missing from the agenda below.
+        st.warning(
+            "**No deadlines shown for "
+            + ", ".join(e.name for e in missing)
+            + "** — pick where each is in its cycle. Nothing is assumed, because a "
+            "wrong status produces a complete but wrong schedule."
+        )
 
     st.divider()
+    st.markdown("**Everything due · rest of the cycle**", unsafe_allow_html=True)
     with st.spinner("Reading the FEC calendar..."):
-        result = _run_async(
-            server.get_committee_deadlines,
-            committee=committee["committee_id"], status=status,
-            state=state, district=district,
-        )
+        _combined_agenda(entries)
 
-    if "error" in result:
-        st.error(result["error"])
-        return
-
-    _render_deadlines(result)
-    if result.get("deadlines"):
-        st.divider()
-        _invite_step(committee, status, state, district)
+    st.divider()
+    _invite_step(entries)
 
 
 def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested

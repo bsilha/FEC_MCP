@@ -21,3 +21,6 @@ data/rulebooks/.index/
 
 # Record of which deadline invitations have been sent (per-install state).
 data/sent_invites.json
+
+# Per-install roster of committees a user is tracking.
+data/committee_roster.json
