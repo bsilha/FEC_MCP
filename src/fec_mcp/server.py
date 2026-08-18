@@ -291,6 +291,7 @@ _CANDIDATE_KEYS = [
 _COMMITTEE_KEYS = [
     "committee_id",
     "name",
+    "candidate_ids",
     "committee_type",
     "committee_type_full",
     "designation",

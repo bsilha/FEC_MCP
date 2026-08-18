@@ -1394,6 +1394,11 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
     query = st.text_input(
         "Committee name or FEC ID",
         placeholder="Eli Crane for Congress    —or—    C00784934",
+        help=(
+            "FEC committee search also matches the candidate's name, so a "
+            "committee named for someone's first name can be found by their "
+            "surname. Those results are grouped separately below."
+        ),
         key="dl_query",
     )
     if st.button("Find committee", type="primary") and query.strip():
@@ -1423,39 +1428,56 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
             st.session_state.pop("dl_matches", None)
             st.rerun()
         else:
-            st.caption(f"{len(matches)} matches — pick one:")
-            shown_other_heading = False
-            for i, match in enumerate(matches):
-                if not match.get("_by_name", True) and not shown_other_heading:
-                    shown_other_heading = True
-                    st.caption(
-                        "Matched on the candidate's name rather than the committee's — "
-                        "FEC committee search covers both."
-                    )
-                label = (
-                    f"{match.get('name')} · {match.get('committee_id')} · "
-                    f"{match.get('state') or '—'} · {match.get('designation_full') or ''}"
-                )
-                if match.get("_why"):
-                    label += f"  ·  candidate: {match['_why']}"
-                if st.button(label, key=f"dl_match_{i}", use_container_width=True):
-                    # Re-read the chosen committee from the detail endpoint
-                    # rather than keeping the search row. A search result is
-                    # a listing record and has been thinner than the detail
-                    # one before; everything downstream -- which statuses
-                    # apply, quarterly versus monthly -- depends on fields
-                    # that a listing may not carry, and the failure is
-                    # silent: the committee simply looks like a different
-                    # kind of committee than it is.
-                    with st.spinner("Loading committee..."):
-                        detail = _run_async(
-                            server.get_committee, committee_id=match["committee_id"]
-                        )
-                    full = (detail.get("results") or [None])[0] if "error" not in detail else None
-                    st.session_state["dl_committee"] = full or match
-                    st.session_state.pop("dl_matches", None)
-                    st.rerun()
+            by_name = [m for m in matches if m.get("_by_name", True)]
+            by_candidate = [m for m in matches if not m.get("_by_name", True)]
+
+            st.caption(
+                f"{len(by_name)} match{'' if len(by_name) == 1 else 'es'} — pick one:"
+                if by_name
+                else "No committee name matched — see below."
+            )
+            for i, match in enumerate(by_name):
+                _match_button(match, f"dl_match_{i}")
+
+            # Kept, but out of the way. The field asks for a committee name
+            # or ID, so a row matching neither is a distraction in the main
+            # list -- but FEC search also matches the linked candidate's
+            # name, and someone who knows the candidate and not the
+            # committee still needs a way through. Collapsed by default:
+            # available when wanted, silent when not.
+            if by_candidate:
+                with st.expander(
+                    f"{len(by_candidate)} more matched a candidate's name, not the committee's"
+                ):
+                    for i, match in enumerate(by_candidate):
+                        _match_button(match, f"dl_cand_match_{i}")
     return None
+
+
+def _match_button(match: dict[str, Any], key: str) -> None:  # pragma: no cover -- Streamlit UI
+    """One selectable search result; selecting it advances the workflow."""
+    label = (
+        f"{match.get('name')} · {match.get('committee_id')} · "
+        f"{match.get('state') or '—'} · {match.get('designation_full') or ''}"
+    )
+    if match.get("_why"):
+        label += f"  ·  candidate: {match['_why']}"
+
+    if not st.button(label, key=key, use_container_width=True):
+        return
+
+    # Re-read the chosen committee from the detail endpoint rather than
+    # keeping the search row. A search result is a listing record and has
+    # been thinner than the detail one before; everything downstream --
+    # which statuses apply, quarterly versus monthly -- depends on fields
+    # a listing may not carry, and the failure is silent: the committee
+    # simply looks like a different kind of committee than it is.
+    with st.spinner("Loading committee..."):
+        detail = _run_async(server.get_committee, committee_id=match["committee_id"])
+    full = (detail.get("results") or [None])[0] if "error" not in detail else None
+    st.session_state["dl_committee"] = full or match
+    st.session_state.pop("dl_matches", None)
+    st.rerun()
 
 
 def _status_step(committee: dict[str, Any]) -> tuple[str, str | None, str | None]:  # pragma: no cover
