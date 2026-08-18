@@ -1389,7 +1389,20 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
                     f"{match.get('state') or '—'} · {match.get('designation_full') or ''}"
                 )
                 if st.button(label, key=f"dl_match_{i}", use_container_width=True):
-                    st.session_state["dl_committee"] = match
+                    # Re-read the chosen committee from the detail endpoint
+                    # rather than keeping the search row. A search result is
+                    # a listing record and has been thinner than the detail
+                    # one before; everything downstream -- which statuses
+                    # apply, quarterly versus monthly -- depends on fields
+                    # that a listing may not carry, and the failure is
+                    # silent: the committee simply looks like a different
+                    # kind of committee than it is.
+                    with st.spinner("Loading committee..."):
+                        detail = _run_async(
+                            server.get_committee, committee_id=match["committee_id"]
+                        )
+                    full = (detail.get("results") or [None])[0] if "error" not in detail else None
+                    st.session_state["dl_committee"] = full or match
                     st.session_state.pop("dl_matches", None)
                     st.rerun()
     return None

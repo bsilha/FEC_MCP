@@ -280,17 +280,27 @@ _CANDIDATE_KEYS = [
     "principal_committees",
 ]
 
+# The *_full fields are the human-readable labels; the bare codes beside
+# them are what logic keys on, and dropping those made search results
+# unusable for anything but display. `designation` decides whether a
+# committee is a candidate's own (and therefore which lifecycle statuses
+# even apply), and `filing_frequency` decides quarterly versus monthly
+# reports -- a committee found by name came back without either, so it
+# read as an unknown filer with the wrong set of statuses offered, while
+# the same committee looked up by ID was complete.
 _COMMITTEE_KEYS = [
     "committee_id",
     "name",
+    "committee_type",
     "committee_type_full",
+    "designation",
     "designation_full",
+    "filing_frequency",
     "organization_type_full",
     "party_full",
     "state",
     "treasurer_name",
     "first_file_date",
-    "committee_id",
 ]
 
 

@@ -132,6 +132,49 @@ async def test_search_candidates_trims_fields(monkeypatch):
     assert result["pagination"] == {"page": 1, "pages": 1}
 
 
+async def test_search_committees_keeps_the_fields_logic_depends_on(monkeypatch):
+    """A committee found by NAME must carry the same decision-making
+    fields as one looked up by ID.
+
+    `designation` decides whether a committee is a candidate's own, and so
+    which lifecycle statuses apply; `filing_frequency` decides quarterly
+    versus monthly reports. Both were trimmed away here while their
+    *_full display labels were kept, so the same committee looked like an
+    unknown filer with the wrong statuses offered depending on how it was
+    found -- and nothing errored.
+    """
+    fake_client = AsyncMock()
+    fake_client.search_committees = AsyncMock(
+        return_value={
+            "results": [
+                {
+                    "committee_id": "C00902668",
+                    "name": "ABDUL FOR U.S. SENATE",
+                    "designation": "P",
+                    "designation_full": "Principal campaign committee",
+                    "committee_type": "S",
+                    "committee_type_full": "Senate",
+                    "filing_frequency": "Q",
+                    "state": "MI",
+                    "internal_noise": "dropped",
+                }
+            ],
+            "pagination": {"page": 1, "pages": 1},
+        }
+    )
+
+    async def fake_get_client():
+        return fake_client
+
+    monkeypatch.setattr(server, "_client", fake_get_client)
+    committee = (await server.search_committees(name="Abdul"))["results"][0]
+
+    assert committee["designation"] == "P"
+    assert committee["filing_frequency"] == "Q"
+    assert committee["committee_type"] == "S"
+    assert "internal_noise" not in committee
+
+
 async def test_search_candidates_surfaces_openfec_error(monkeypatch):
     from fec_mcp.openfec_client import OpenFECError
 
