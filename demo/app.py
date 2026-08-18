@@ -1328,6 +1328,42 @@ def run_turn(client: Anthropic, history: list[dict[str, Any]], user_text: str) -
     return {"text": text, "trace": trace, "stop_reason": last_message.stop_reason}
 
 
+def _annotate_matches(matches: list[dict], query: str) -> list[dict]:  # pragma: no cover
+    """Order search results and explain the ones that need explaining.
+
+    OpenFEC's committee search is full-text and also matches the LINKED
+    CANDIDATE's name -- which it does not return on the committee record.
+    Searching "abdul" therefore returns JAMAL FOR CONGRESS, matching a
+    candidate whose surname is Abdul-something, with nothing in the row to
+    show why. The match is legitimate; it is just invisible, and an
+    unexplained row in a picker reads as a bug.
+
+    So: rows matching by name come first, and rows that don't get their
+    candidate's name looked up to account for themselves. Filtering them
+    out instead was the obvious alternative and would be worse -- someone
+    may know the candidate rather than the committee's name, and silently
+    dropping those results is a loss nobody can see.
+    """
+    query = (query or "").strip().lower()
+    annotated: list[dict] = []
+    lookups_left = 5  # bound the extra requests; usually only a row or two
+
+    for match in matches:
+        by_name = query in (match.get("name") or "").lower()
+        why = None
+        if not by_name and lookups_left:
+            for candidate_id in (match.get("candidate_ids") or [])[:1]:
+                lookups_left -= 1
+                detail = _run_async(server.get_candidate, candidate_id=candidate_id)
+                found = detail.get("results") or []
+                if found:
+                    why = found[0].get("name")
+        annotated.append({**match, "_by_name": by_name, "_why": why})
+
+    annotated.sort(key=lambda row: not row["_by_name"])
+    return annotated
+
+
 def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit UI
     """Step 1: find and choose one committee.
 
@@ -1370,7 +1406,12 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
         if "error" in found:
             st.error(found["error"])
         else:
-            st.session_state["dl_matches"] = found.get("results") or []
+            # Annotated once here, not on every rerun -- it costs a request
+            # per unexplained row and the answer can't change until the
+            # next search.
+            st.session_state["dl_matches"] = _annotate_matches(
+                found.get("results") or [], text
+            )
             st.rerun()
 
     matches = st.session_state.get("dl_matches")
@@ -1383,11 +1424,20 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
             st.rerun()
         else:
             st.caption(f"{len(matches)} matches — pick one:")
+            shown_other_heading = False
             for i, match in enumerate(matches):
+                if not match.get("_by_name", True) and not shown_other_heading:
+                    shown_other_heading = True
+                    st.caption(
+                        "Matched on the candidate's name rather than the committee's — "
+                        "FEC committee search covers both."
+                    )
                 label = (
                     f"{match.get('name')} · {match.get('committee_id')} · "
                     f"{match.get('state') or '—'} · {match.get('designation_full') or ''}"
                 )
+                if match.get("_why"):
+                    label += f"  ·  candidate: {match['_why']}"
                 if st.button(label, key=f"dl_match_{i}", use_container_width=True):
                     # Re-read the chosen committee from the detail endpoint
                     # rather than keeping the search row. A search result is
