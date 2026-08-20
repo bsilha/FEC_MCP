@@ -650,11 +650,31 @@ def _pdf_url(source: str, page: int | None = None) -> str:
 def _run_async(coro_fn, /, **kwargs) -> Any:
     """Run one of fec_mcp.server's async (OpenFEC-backed) tool functions.
 
-    Each call gets a fresh event loop (asyncio.run), so the cached
-    OpenFECClient/httpx.AsyncClient from a previous call -- bound to a now-closed
-    loop -- must be dropped first, or httpx raises a cross-event-loop error.
+    Each call gets a fresh event loop (asyncio.run), so anything the
+    server module cached against a previous, now-closed loop has to be
+    dropped first.
+
+    That is two things, not one. The OpenFECClient wraps an
+    httpx.AsyncClient, which raises a cross-event-loop error if reused.
+    And _client_lock is an asyncio.Lock, which binds itself to the first
+    loop that contends for it and then refuses every other one:
+
+        RuntimeError: <asyncio.locks.Lock ...> is bound to a different
+        event loop
+
+    The lock hid for a long time because asyncio.Lock.acquire() has an
+    uncontended fast path that never looks at the loop at all -- so a
+    lock with no waiters works across loops by accident. It only fails
+    once a waiter is left queued by a loop that closed underneath it,
+    which is why the traceback reports "waiters:1" and why this surfaced
+    only after the roster began issuing several OpenFEC calls per rerun.
+
+    The lock is correct for the real MCP server, which runs one loop for
+    its lifetime; it is this demo's loop-per-call pattern that it cannot
+    survive. So it is replaced here rather than removed there.
     """
     server._openfec_client = None
+    server._client_lock = asyncio.Lock()
     return asyncio.run(coro_fn(**kwargs))
 
 

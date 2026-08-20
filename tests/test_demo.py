@@ -259,6 +259,56 @@ def test_jurisdiction_label_falls_back_to_the_code_for_unknown_jurisdictions():
     assert demo_app._jurisdiction_label("zz") == "ZZ"
 
 
+# -- running async server tools from Streamlit ------------------------------
+
+
+def test_run_async_survives_a_lock_left_bound_to_a_closed_loop():
+    """Regression guard for a crash on the second OpenFEC call onward.
+
+    server._client_lock is an asyncio.Lock, which binds to the first loop
+    that contends for it and then rejects every other one. _run_async
+    gives each call its own loop, so a lock carried over from a closed
+    one raises "is bound to a different event loop" -- which reached the
+    user as a full traceback when searching for a committee.
+
+    It hid for a long time because Lock.acquire() has an uncontended fast
+    path that never checks the loop, so a lock with no waiters works
+    across loops by accident. This test poisons the lock the way a
+    closed-out waiter does, then asserts the calls still go through.
+    """
+    import asyncio
+
+    from fec_mcp import server
+
+    async def leave_a_waiter_behind():
+        await server._client_lock.acquire()
+        asyncio.create_task(server._client_lock.acquire())
+        await asyncio.sleep(0)
+
+    asyncio.run(leave_a_waiter_behind())
+
+    async def uses_the_lock():
+        async with server._client_lock:
+            return "ok"
+
+    for _ in range(3):
+        assert demo_app._run_async(lambda **_kw: uses_the_lock()) == "ok"
+
+
+def test_run_async_drops_the_cached_openfec_client():
+    """The other half of the same problem: an httpx.AsyncClient bound to
+    a closed loop raises a cross-event-loop error if reused."""
+    from fec_mcp import server
+
+    server._openfec_client = object()
+
+    async def noop():
+        return None
+
+    demo_app._run_async(lambda **_kw: noop())
+    assert server._openfec_client is None
+
+
 # -- committee search filtering ---------------------------------------------
 
 # Verbatim from a live "abdul" search. OpenFEC's committee endpoint is
