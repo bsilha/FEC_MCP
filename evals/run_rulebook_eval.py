@@ -98,9 +98,19 @@ def _grade_citations(text: str) -> list[str]:
 
         elif citation["kind"] == "ao":
             ao_no = citation["ao_no"]
-            server._openfec_client = None
+
+            # The client is cached per event loop, and asyncio.run() gives
+            # each call its own -- so nothing carries over and there is
+            # nothing to reset here. Closing it on the way out returns the
+            # connection pool rather than leaking it once per citation.
+            async def _lookup(ao_no: str = ao_no) -> dict:
+                try:
+                    return await server.get_advisory_opinion(ao_no)
+                finally:
+                    await server.aclose_client()
+
             try:
-                data = asyncio.run(server.get_advisory_opinion(ao_no))
+                data = asyncio.run(_lookup())
             except Exception as exc:  # live network call -- report, don't crash the run
                 failures.append(f"couldn't verify AO {ao_no!r}: {exc}")
                 continue

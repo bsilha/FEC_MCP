@@ -98,16 +98,65 @@ you haven't checked, rather than describing contents you haven't seen.
 mcp = FastMCP("fec-mcp", instructions=INSTRUCTIONS)
 
 _rulebook_index = RulebookIndex()
-_openfec_client: OpenFECClient | None = None
-_client_lock = asyncio.Lock()
+
+# The OpenFEC client is cached PER EVENT LOOP, not once for the process.
+#
+# Both things being cached are loop-bound. An httpx.AsyncClient refuses to
+# be used from a loop other than the one it was created on, and an
+# asyncio.Lock binds itself to the first loop that contends for it and
+# then rejects every other one:
+#
+#     RuntimeError: <asyncio.locks.Lock ... [unlocked, waiters:1]> is
+#     bound to a different event loop
+#
+# The MCP server runs one loop for its lifetime and never noticed. The
+# Streamlit demo runs asyncio.run() per tool call, and Streamlit runs each
+# session's script in its own thread -- so several loops exist at once,
+# and a single shared lock is not merely stale, it is contended across
+# loops that cannot see each other's futures. That produced the crash
+# above and, at the same time, threads wedged forever waiting on a lock
+# whose owner lived in a loop that had already closed. Reproduced both
+# with four threads before this change; neither survives keying on the
+# running loop, because two loops now share nothing to fight over.
+_clients: dict[asyncio.AbstractEventLoop, OpenFECClient] = {}
+_client_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 
 
 async def _client() -> OpenFECClient:
-    global _openfec_client
-    async with _client_lock:
-        if _openfec_client is None:
-            _openfec_client = OpenFECClient()
-    return _openfec_client
+    loop = asyncio.get_running_loop()
+
+    # Insurance against a caller that never closes its loop's client --
+    # entries would otherwise accumulate one per asyncio.run(). Their
+    # loops are gone, so the clients cannot be closed properly here; the
+    # reference is dropped so they can at least be collected.
+    for dead in [existing for existing in _clients if existing.is_closed()]:
+        _clients.pop(dead, None)
+        _client_locks.pop(dead, None)
+
+    lock = _client_locks.get(loop)
+    if lock is None:
+        lock = _client_locks[loop] = asyncio.Lock()
+
+    async with lock:
+        client = _clients.get(loop)
+        if client is None:
+            client = _clients[loop] = OpenFECClient()
+        return client
+
+
+async def aclose_client() -> None:
+    """Close and forget the OpenFEC client belonging to the running loop.
+
+    For callers that use a loop per call. Beyond tidiness: each client
+    owns an httpx connection pool, and dropping one without closing it
+    leaks the sockets it holds. The demo did exactly that on every tool
+    call before this existed.
+    """
+    loop = asyncio.get_running_loop()
+    _client_locks.pop(loop, None)
+    client = _clients.pop(loop, None)
+    if client is not None:
+        await client.aclose()
 
 
 def _trim(item: dict[str, Any], keys: list[str]) -> dict[str, Any]:

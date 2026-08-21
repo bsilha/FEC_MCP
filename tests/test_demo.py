@@ -17,6 +17,7 @@ instead of only surfacing when a user asks the demo the wrong question.
 import importlib.util
 import inspect
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -262,51 +263,83 @@ def test_jurisdiction_label_falls_back_to_the_code_for_unknown_jurisdictions():
 # -- running async server tools from Streamlit ------------------------------
 
 
-def test_run_async_survives_a_lock_left_bound_to_a_closed_loop():
-    """Regression guard for a crash on the second OpenFEC call onward.
+class _FakeOpenFECClient:
+    """Stands in for OpenFECClient so no test goes near the network.
 
-    server._client_lock is an asyncio.Lock, which binds to the first loop
-    that contends for it and then rejects every other one. _run_async
-    gives each call its own loop, so a lock carried over from a closed
-    one raises "is bound to a different event loop" -- which reached the
-    user as a full traceback when searching for a committee.
-
-    It hid for a long time because Lock.acquire() has an uncontended fast
-    path that never checks the loop, so a lock with no waiters works
-    across loops by accident. This test poisons the lock the way a
-    closed-out waiter does, then asserts the calls still go through.
+    Construction is slowed on purpose: _client() holds the lock while it
+    builds the client, and that window is where two threads sharing one
+    lock collide. The real one builds an httpx.AsyncClient there, which
+    is not free either.
     """
+
+    def __init__(self, *args, **kwargs):
+        self.closed = False
+        time.sleep(0.002)
+
+    async def aclose(self):
+        self.closed = True
+
+
+def test_each_loop_gets_its_own_openfec_client(monkeypatch):
+    """The client wraps an httpx.AsyncClient, which refuses to be used
+    from a loop other than the one that created it. _run_async gives each
+    call its own loop, so one cached for the process would be poison from
+    the second call onward."""
     import asyncio
 
     from fec_mcp import server
 
-    async def leave_a_waiter_behind():
-        await server._client_lock.acquire()
-        asyncio.create_task(server._client_lock.acquire())
-        await asyncio.sleep(0)
+    monkeypatch.setattr(server, "OpenFECClient", _FakeOpenFECClient)
+    seen = [demo_app._run_async(lambda **_kw: server._client()) for _ in range(3)]
 
-    asyncio.run(leave_a_waiter_behind())
-
-    async def uses_the_lock():
-        async with server._client_lock:
-            return "ok"
-
-    for _ in range(3):
-        assert demo_app._run_async(lambda **_kw: uses_the_lock()) == "ok"
+    assert len({id(client) for client in seen}) == 3
+    assert all(client.closed for client in seen)
+    # and nothing is left behind for a loop that has gone
+    assert server._clients == {} and server._client_locks == {}
+    del asyncio
 
 
-def test_run_async_drops_the_cached_openfec_client():
-    """The other half of the same problem: an httpx.AsyncClient bound to
-    a closed loop raises a cross-event-loop error if reused."""
+def test_concurrent_script_runs_do_not_collide_over_the_client(monkeypatch):
+    """Regression guard for a traceback the user hit twice.
+
+    Streamlit runs each session's script in its own thread, so two runs
+    can be in flight at once -- two tabs, or a rerun starting before the
+    previous one finished its OpenFEC calls. When the client and its lock
+    were process-wide, one thread would end up awaiting a lock the other
+    held in a loop it could not see:
+
+        RuntimeError: <asyncio.locks.Lock ... [unlocked, waiters:1]> is
+        bound to a different event loop
+
+    and sometimes wedge instead of raising. Against the pre-fix code this
+    harness produced three of those and left a thread hung; the assert on
+    `wedged` is what catches the hang, since a deadlock fails no
+    assertion on its own.
+    """
+    import threading
+
     from fec_mcp import server
 
-    server._openfec_client = object()
+    monkeypatch.setattr(server, "OpenFECClient", _FakeOpenFECClient)
 
-    async def noop():
-        return None
+    failures: list[BaseException] = []
 
-    demo_app._run_async(lambda **_kw: noop())
-    assert server._openfec_client is None
+    def script_run():
+        try:
+            for _ in range(8):
+                demo_app._run_async(lambda **_kw: server._client())
+        except Exception as exc:  # noqa: BLE001
+            failures.append(exc)
+
+    threads = [threading.Thread(target=script_run, daemon=True) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    wedged = [thread for thread in threads if thread.is_alive()]
+    assert not failures, f"cross-loop failure: {failures[0]!r}"
+    assert not wedged, f"{len(wedged)} script run(s) deadlocked on the client lock"
 
 
 # -- committee search filtering ---------------------------------------------
