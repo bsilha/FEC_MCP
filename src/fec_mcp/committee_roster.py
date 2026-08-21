@@ -41,6 +41,7 @@ class RosterEntry:
     name: str
     designation: str = ""
     filing_frequency: str = ""
+    committee_type: str = ""
     status: str = UNSET_STATUS
     state: str | None = None
     district: str | None = None
@@ -53,6 +54,25 @@ class RosterEntry:
     @property
     def is_candidate_committee(self) -> bool:
         return (self.designation or "").upper() in {"P", "A"}
+
+    @property
+    def runs_in_a_district(self) -> bool:
+        """Whether a district is part of this committee's race at all.
+
+        Only House races have one. A Senate seat is statewide and the
+        presidency is national, so a district on either is not merely
+        unknown -- it does not exist, and a box inviting one is an
+        invitation to enter something meaningless.
+
+        OpenFEC's committee_type carries this directly: H, S, P for the
+        three federal offices. Absent (an older roster entry saved before
+        this was stored) is treated as "possibly House", because the cost
+        of a needlessly enabled box is far below that of a disabled box on
+        a House committee whose district then cannot be entered at all.
+        """
+        if not self.is_candidate_committee:
+            return False
+        return (self.committee_type or "H").upper() == "H"
 
 
 class CommitteeRoster:
@@ -85,6 +105,7 @@ class CommitteeRoster:
                 name=data.get("name") or committee_id,
                 designation=data.get("designation") or "",
                 filing_frequency=data.get("filing_frequency") or "",
+                committee_type=data.get("committee_type") or "",
                 status=data.get("status") or UNSET_STATUS,
                 state=data.get("state") or None,
                 district=data.get("district") or None,
@@ -113,11 +134,16 @@ class CommitteeRoster:
             "name": committee.get("name") or committee_id,
             "designation": committee.get("designation") or "",
             "filing_frequency": committee.get("filing_frequency") or "",
+            # H / S / P -- which federal office, and so whether a district
+            # is part of this committee's race at all.
+            "committee_type": committee.get("committee_type") or "",
             # The committee's own state is a reasonable first guess at the
             # race's state and saves retyping, but it is only a guess: a
             # committee's mailing address need not be where the race is.
+            # A caller that has resolved the actual race passes both, and
+            # they are kept editable either way.
             "state": committee.get("state") or None,
-            "district": None,
+            "district": committee.get("district") or None,
             "status": UNSET_STATUS,
             "status_set_on": None,
             # A full timestamp, not a date. Everything added in one sitting

@@ -192,3 +192,66 @@ def test_horizon_never_drops_below_a_year():
 
 def test_horizon_from_an_odd_year_runs_to_the_next_even_cycle_close():
     assert cycle_horizon_months(date(2027, 6, 1)) >= 12
+
+
+# -- which committees have a district at all ---------------------------------
+
+SENATE = {
+    "committee_id": "C00694455",
+    "name": "ABDUL FOR U.S. SENATE",
+    "designation": "P",
+    "filing_frequency": "Q",
+    "committee_type": "S",
+    "state": "MI",
+}
+
+
+def test_a_house_committee_runs_in_a_district(roster):
+    roster.add({**CRANE, "committee_type": "H"})
+    assert roster.get("C00784934").runs_in_a_district
+
+
+def test_a_senate_committee_has_no_district(roster):
+    """Not "unknown" -- a Senate seat is statewide, so a district on one
+    would narrow the race to a contest that does not exist."""
+    roster.add(SENATE)
+    entry = roster.get("C00694455")
+
+    assert entry.is_candidate_committee
+    assert not entry.runs_in_a_district
+
+
+def test_a_presidential_committee_has_no_district(roster):
+    roster.add({**SENATE, "committee_id": "C00111111", "committee_type": "P"})
+    assert not roster.get("C00111111").runs_in_a_district
+
+
+def test_a_pac_has_no_district(roster):
+    roster.add(PAC)
+    assert not roster.get("C00401224").runs_in_a_district
+
+
+def test_a_candidate_committee_of_unknown_office_keeps_its_district_box(roster):
+    """Rosters saved before committee_type was stored have none. An
+    unnecessary box on a Senate committee is a smaller harm than a House
+    committee whose district cannot be entered at all."""
+    roster.add({k: v for k, v in CRANE.items()})  # no committee_type
+    assert roster.get("C00784934").runs_in_a_district
+
+
+def test_committee_type_survives_a_reload(tmp_path):
+    path = tmp_path / "roster.json"
+    CommitteeRoster(path=path).add(SENATE)
+    assert CommitteeRoster(path=path).get("C00694455").committee_type == "S"
+
+
+def test_a_resolved_district_is_kept_when_the_committee_is_added(roster):
+    """The caller looks the race up before adding; no committee record
+    carries a district of its own."""
+    roster.add({**CRANE, "committee_type": "H", "district": "02"})
+    assert roster.get("C00784934").district == "02"
+
+
+def test_a_committee_added_without_a_district_has_none(roster):
+    roster.add(CRANE)
+    assert roster.get("C00784934").district is None

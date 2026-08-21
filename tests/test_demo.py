@@ -371,3 +371,29 @@ def test_jurisdiction_sort_key_puts_federal_first_then_states_alphabetically():
     jurisdictions = ["ny", "federal", "ca", "ga"]
     ordered = sorted(jurisdictions, key=demo_app._jurisdiction_sort_key)
     assert ordered == ["federal", "ca", "ga", "ny"]
+
+
+# -- how dates are shown ----------------------------------------------------
+
+
+def test_deadline_dates_render_month_first():
+    """US compliance calendars read MM-DD-YYYY; the FEC's own API speaks
+    ISO, so the conversion happens at the last possible moment."""
+    assert demo_app._us_date("2026-10-15") == "10-15-2026"
+    assert demo_app._us_date("2027-01-31") == "01-31-2027"
+
+
+def test_an_unreadable_date_is_shown_as_it_came_rather_than_blanked():
+    """A date this cannot parse is still more use on screen than nothing."""
+    assert demo_app._us_date("sometime in October") == "sometime in October"
+
+
+def test_a_missing_date_renders_as_empty():
+    assert demo_app._us_date(None) == ""
+
+
+def test_the_agenda_row_shows_the_us_ordered_date():
+    row = {"date": "2026-11-20", "_committee": "ELI CRANE FOR CONGRESS",
+           "deadline": "Post-General Report Due", "report_type": "post_general"}
+    assert "11-20-2026" in demo_app._agenda_row_html(row)
+    assert "2026-11-20" not in demo_app._agenda_row_html(row)

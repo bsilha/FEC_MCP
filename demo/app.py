@@ -212,9 +212,16 @@ DEADLINE_CSS = f"""
     text-transform: uppercase; color: {BRAND_STEEL};
     border-bottom: 1px solid #e3e8ec; padding-bottom: 4px;
 }}
+/* A hint hanging off a heading: deliberately not shouting like the
+   heading it follows. */
 .fec-roster-head span {{
     border-bottom: 1px dotted {BRAND_STEEL}; cursor: help;
     text-transform: none; letter-spacing: 0; font-weight: 600; opacity: .8;
+}}
+/* ...but when the heading word ITSELF carries the tooltip, it still has
+   to read as one of the headings. */
+.fec-roster-head span.hdr {{
+    text-transform: uppercase; letter-spacing: .06em; font-weight: 700; opacity: 1;
 }}
 .fec-roster-name {{
     font-weight: 700; font-size: 0.86rem; color: {BRAND_NAVY_DARK};
@@ -264,6 +271,18 @@ DEADLINE_CSS = f"""
 """
 
 
+def _us_date(value: Any) -> str:
+    """An ISO date as MM-DD-YYYY, the way US compliance calendars read.
+
+    Anything unparseable is passed through untouched rather than blanked:
+    a date this cannot read is still more use on screen than nothing.
+    """
+    try:
+        return date.fromisoformat(str(value)).strftime("%m-%d-%Y")
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
 def _agenda_row_html(row: dict[str, Any]) -> str:
     """One deadline in the combined agenda.
 
@@ -279,7 +298,7 @@ def _agenda_row_html(row: dict[str, Any]) -> str:
     who = str(row.get("_committee") or "")
     return (
         '<div class="fec-dl-row">'
-        f'<span class="fec-dl-date">{html.escape(str(row.get("date") or ""))}</span>'
+        f'<span class="fec-dl-date">{html.escape(_us_date(row.get("date")))}</span>'
         f'<span class="fec-dl-who" title="{html.escape(who, quote=True)}">{html.escape(who)}</span>'
         f'<span class="fec-dl-name">{html.escape(str(row.get("deadline") or ""))}</span>'
         f"{flag}"
@@ -1456,7 +1475,7 @@ def _name_matches_only(matches: list[dict], query: str) -> tuple[list[dict], int
 
 
 def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit UI
-    """Step 1: find and choose one committee.
+    """Find and choose one committee to add to the roster.
 
     Searching returns a list to pick from rather than resolving silently.
     The underlying tool errors on an ambiguous name on purpose -- picking
@@ -1464,7 +1483,6 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
     schedule for a committee nobody asked about -- and a UI can do better
     than an error: show the matches and let a person choose.
     """
-    st.markdown("**1 &middot; Committee**", unsafe_allow_html=True)
     chosen = st.session_state.get("dl_committee")
 
     if chosen:
@@ -1482,17 +1500,28 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
                 st.rerun()
         return chosen
 
-    query = st.text_input(
-        "Committee name or FEC ID",
-        placeholder="Eli Crane for Congress    —or—    C00784934",
-        help=(
-            "Matches the committee's own name or FEC ID. The FEC's search also "
-            "returns committees matching elsewhere in their records, such as the "
-            "candidate's name; those are filtered out here."
-        ),
-        key="dl_query",
-    )
-    if st.button("Find committee", type="primary") and query.strip():
+    # The key carries a counter, bumped every time a committee is added.
+    # Deleting a text input's key does NOT clear the box: the widget is
+    # still mounted on the frontend, which hands its value straight back
+    # on the next run -- so the previous search term sat in the field
+    # after the committee had been added, as if the search were still
+    # pending. A key that changes is a different widget, which is the one
+    # reliable way to get an empty box back.
+    field_col, button_col = st.columns([5, 1], vertical_alignment="bottom")
+    with field_col:
+        query = st.text_input(
+            "Add a committee — name or FEC ID",
+            placeholder="Eli Crane for Congress    —or—    C00784934",
+            help=(
+                "Matches the committee's own name or FEC ID. The FEC's search also "
+                "returns committees matching elsewhere in their records, such as the "
+                "candidate's name; those are filtered out here."
+            ),
+            key=f"dl_query_{st.session_state.get('dl_query_round', 0)}",
+        )
+    with button_col:
+        find = st.button("Find committee", type="primary", use_container_width=True)
+    if find and query.strip():
         text = query.strip()
         with st.spinner("Searching OpenFEC..."):
             if re.fullmatch(r"C\d{8}", text, re.IGNORECASE):
@@ -1584,17 +1613,23 @@ def _status_age_note(entry) -> str | None:
     return f"⚠ set {months} month{'s' if months != 1 else ''} ago — still current?"
 
 
-_ROSTER_COLUMNS = [4.2, 4, 0.9, 0.9, 0.6]
+_ROSTER_COLUMNS = [4, 3.9, 0.85, 1.15, 0.6]
+
+_DISTRICT_NOTE = (
+    "House committees only. A district is what makes a House race a race -- "
+    "AZ-02 and AZ-06 are different contests -- so it decides which pre-primary "
+    "deadlines bind. Senate and presidential committees run statewide or "
+    "nationally and have no district; the box is disabled for them."
+)
 
 
 def _roster_header() -> None:  # pragma: no cover -- Streamlit UI
     """Column headings for the roster.
 
-    The two-character boxes at the end of each row are unlabeled otherwise,
-    and the status column's full consequence text has nowhere else to live
-    now that the options themselves carry only the short form -- so it
-    hangs off this heading as a tooltip, stated once for all seven
-    statuses instead of once per row forever.
+    The short boxes at the end of each row are unlabeled otherwise, and
+    two things that cannot fit on screen hang off these headings as
+    tooltips: what each status changes (seven sentences, one per option),
+    and why the district box is only for House committees.
     """
     detail = " · ".join(f"{label}: {_STATUS_DETAIL[value]}" for value, label, _, _ in STATUS_CHOICES)
     cols = st.columns(_ROSTER_COLUMNS, vertical_alignment="bottom")
@@ -1605,7 +1640,7 @@ def _roster_header() -> None:  # pragma: no cover -- Streamlit UI
             "Where it is in the cycle "
             f'<span title="{html.escape(detail, quote=True)}">what each means</span>',
             "State",
-            "Dist",
+            f'<span class="hdr" title="{html.escape(_DISTRICT_NOTE, quote=True)}">District</span>',
             "",
         ],
     ):
@@ -1674,6 +1709,10 @@ def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
     # seeded from the committee's own record is a mailing address, and a
     # greyed "MA" beside a national PAC reads as a claim about a race.
     races = entry.is_candidate_committee
+    # Narrower still: a district exists only in a House race. On a Senate
+    # or presidential committee it is not unknown, it does not exist, and
+    # an open box invites a value that would silently narrow the race.
+    districted = entry.runs_in_a_district
     with state_col:
         state = st.text_input(
             "State", value=(entry.state or "") if races else "", max_chars=2,
@@ -1684,23 +1723,66 @@ def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
         ).strip().upper()
     with dist_col:
         district = st.text_input(
-            "District", value=(entry.district or "") if races else "", max_chars=2,
+            "District", value=(entry.district or "") if districted else "", max_chars=2,
             key=f"roster_district_{entry.committee_id}",
             label_visibility="collapsed",
-            placeholder="00" if races else "",
-            disabled=not races,
+            placeholder="00" if districted else "",
+            disabled=not districted,
+            help=_DISTRICT_NOTE if not districted and races else None,
         ).strip()
 
-    if entry.is_candidate_committee and (
-        state != (entry.state or "") or district != (entry.district or "")
+    if races and (
+        state != (entry.state or "")
+        or (districted and district != (entry.district or ""))
     ):
-        _roster().update(entry.committee_id, state=state, district=district)
+        _roster().update(
+            entry.committee_id, state=state, district=district if districted else ""
+        )
         st.rerun()
 
     with drop_col:
         if st.button("✕", key=f"roster_drop_{entry.committee_id}", help="Remove"):
             _roster().remove(entry.committee_id)
             st.rerun()
+
+
+def _with_resolved_race(committee: dict[str, Any]) -> dict[str, Any]:  # pragma: no cover -- UI
+    """Fill in the race a candidate committee is running in, if OpenFEC can say.
+
+    A committee record carries a state, which is why one appears by itself
+    when a committee is added -- but that state is the committee's own
+    mailing address, and no committee record carries a district at all. A
+    district lives on the CANDIDATE record, so getting one means going
+    committee -> candidate -> race, which is what this does.
+
+    Two things it deliberately does not do. It does not guess: when the
+    lookup resolves nothing the fields stay empty, which is honest and
+    also what happened before. And it does not overwrite a resolved state
+    with a mailing address -- if the lookup found the race, that state is
+    better evidence than the address on the paperwork.
+
+    Both values land in ordinary editable boxes, so a wrong one can be
+    corrected in place. That matters: OpenFEC's committee-to-candidate
+    links have been observed empty on real principal campaign committees,
+    and stale on others.
+    """
+    office = (committee.get("committee_type") or "").upper()
+    if office not in {"H", "S", "P"}:
+        return committee
+
+    with st.spinner("Looking up the race..."):
+        race = _run_async(server.resolve_race, committee_id=committee["committee_id"])
+
+    if not race.get("state"):
+        return committee
+
+    resolved = {**committee, "state": race["state"]}
+    # Only a House seat has a district. A Senate or presidential race has
+    # none, and writing one would narrow the race to a contest that does
+    # not exist.
+    if office == "H" and race.get("district"):
+        resolved["district"] = race["district"]
+    return resolved
 
 
 def _roster() -> CommitteeRoster:  # pragma: no cover -- Streamlit UI
@@ -1842,7 +1924,8 @@ def _invite_step(entries) -> None:  # pragma: no cover -- Streamlit UI
             f"**{len(stale)} deadline(s) no longer apply but are still in recipients' "
             "calendars.** Nothing is removed automatically — ask them to delete:\n\n"
             + "\n".join(
-                f"- {row.get('date') or 'date unknown'} — {row.get('summary')}" for row in stale
+                f"- {_us_date(row.get('date')) or 'date unknown'} — {row.get('summary')}"
+                for row in stale
             )
         )
 
@@ -1863,59 +1946,71 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
 
     missing = [e for e in entries if not e.has_status]
 
-    # The roster is setup; the agenda is what gets looked at daily. So the
-    # roster starts open only while it still needs attention -- a committee
-    # with no status, or none added yet -- and otherwise starts collapsed
-    # above the agenda rather than pushing it off the screen.
+    # Nothing here collapses, and that is the point.
     #
-    # `expanded` is a starting value, NOT a binding one: an expander keeps
-    # whatever the user last set it to for as long as its LABEL stays the
-    # same, and re-reads `expanded` the moment the label changes, because
-    # the label is part of the widget's identity. Confirmed directly in
-    # the browser -- open the panel by hand, rerun with the same label and
-    # it stays open; rerun with a changed label and it snaps back shut.
+    # Both panels used to be expanders, and both kept closing on the
+    # actions taken from inside them. An expander's `expanded` argument is
+    # a starting value that gets re-read whenever the widget's identity
+    # changes -- and its identity includes its label, its position, and
+    # that very argument. So the panel shut when the label's committee
+    # count changed (any add or delete), when a row was inserted above it
+    # (any add), and when `expanded` itself flipped as the last missing
+    # status was filled in. Three separate triggers, each fixable, none of
+    # them the real problem: setting up a roster is a sequence of edits,
+    # and a container that decides for itself when that sequence is over
+    # will always be wrong at some point in it.
     #
-    # So this label is fixed. It used to count the committees and say how
-    # many still needed a status, which meant every add and every delete
-    # changed it -- and the panel rolled up on exactly the two actions
-    # taken from inside it, hiding the committee just added and, when the
-    # new one had no status yet, closing the drawer the warning below was
-    # pointing at. The count is not worth that: the agenda lists every
-    # committee, and the warning names the ones still missing a status.
-    with st.expander("Your committees", expanded=bool(missing) or not entries):
-        if entries:
-            _roster_header()
-            for i, entry in enumerate(entries):
-                _roster_row(entry, i)
-        else:
-            st.caption("Add a committee to see which FEC deadlines bind it.")
-
-        st.markdown("")
-        # A fixed label is not enough for this one. An expander is also
-        # identified by its POSITION, and every committee added puts
-        # another roster row above this panel -- so it re-reads `expanded`
-        # after each add no matter what its label says, and collapses.
-        # Confirmed in the browser: added a committee from inside this
-        # panel and watched it shut with the search box still filled in.
+    # So the roster is just a table, always on screen. It costs about
+    # 56px a committee, which is affordable because each row is one line.
+    st.markdown("#### Your committees")
+    if entries:
+        # Every row, always, and the page scrolls if there are many.
         #
-        # Hence the explicit flag. People arrive with several committees
-        # at once, and a panel that closed after each would cost a click
-        # per committee. Closing it by hand still sticks -- nothing moves
-        # above it then, so the position holds and this value is not
-        # consulted again.
-        with st.expander(
-            "＋ Add a committee", expanded=st.session_state.get("dl_add_open", not entries)
-        ):
-            picked = _committee_step()
-            if picked:
-                roster.add(picked)
-                st.session_state["dl_add_open"] = True
-                for key in ("dl_committee", "dl_matches", "dl_dropped", "dl_query"):
-                    st.session_state.pop(key, None)
-                st.rerun()
+        # A height cap was tried here and removed. It put the roster in
+        # its own scroll box inside an already-scrolling page, clipped a
+        # row mid-height at the boundary, and took the column headings
+        # away with it -- sticky cannot hold them, since each heading
+        # lives in its own one-row column and a sticky element cannot
+        # outlive its parent's box. Rows nobody can see and boxes nobody
+        # can name is a worse trade than a longer page.
+        _roster_header()
+        for i, entry in enumerate(entries):
+            _roster_row(entry, i)
+        # Said in full rather than left to a tooltip. A disabled box
+        # explains that a district cannot be entered, not why -- and the
+        # reason is the part worth knowing, since a district is what makes
+        # one House race distinct from the next one over.
+        st.caption(
+            "District applies to House committees only — a Senate seat is statewide "
+            "and the presidency is national, so neither has one."
+        )
+    else:
+        st.caption("Add a committee to see which FEC deadlines bind it.")
+
+    picked = _committee_step()
+    if picked:
+        # Adding one already on the roster is a no-op by design -- it must
+        # not reset a status set months ago -- but a no-op that looks
+        # exactly like a successful add is its own problem, so it says so.
+        if roster.get(picked.get("committee_id") or ""):
+            st.session_state["dl_already_tracked"] = picked.get("name")
+        else:
+            roster.add(_with_resolved_race(picked))
+        # A new key for the search box, so it comes back empty. See
+        # _committee_step: deleting the old key does not clear it.
+        st.session_state["dl_query_round"] = st.session_state.get("dl_query_round", 0) + 1
+        for key in ("dl_committee", "dl_matches", "dl_dropped"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+    already = st.session_state.pop("dl_already_tracked", None)
+    if already:
+        st.info(f"{already} is already on your roster — its status was left as it is.")
 
     if not entries:
         return
+
+    st.divider()
 
     if missing:
         # Named, not merely counted: with several committees it has to be
@@ -1924,9 +2019,8 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
         st.warning(
             "**No deadlines shown for "
             + ", ".join(e.name for e in missing)
-            + "** — open **Your committees** above and pick where each is in its cycle. "
-            "Nothing is assumed, because a wrong status produces a complete but wrong "
-            "schedule."
+            + "** — pick where each is in its cycle, above. Nothing is assumed, because "
+            "a wrong status produces a complete but wrong schedule."
         )
 
     st.markdown("#### Everything due · rest of the cycle")

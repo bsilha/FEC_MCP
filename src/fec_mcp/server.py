@@ -1056,6 +1056,34 @@ async def get_committee_deadlines(
     }
 
 
+async def resolve_race(committee_id: str) -> dict[str, Any]:
+    """Which federal race a committee's candidate is in, as far as OpenFEC can say.
+
+    Deliberately NOT an MCP tool. get_committee_deadlines already resolves
+    the race itself when the caller does not supply one, so a model has no
+    reason to call this; it exists for a UI that wants to prefill a race
+    before any deadline is asked for, and can show what it got back for
+    correction.
+
+    Never raises and never guesses: an unresolved race comes back with
+    state None, which the caller should render as an empty field rather
+    than as a value.
+    """
+    resolution = await resolve_committee_race(await _client(), committee_id)
+    return {
+        "state": resolution.state,
+        "district": resolution.district,
+        "office": resolution.office,
+        "candidate_name": resolution.candidate_name,
+        "resolved_via": resolution.resolved_via,
+        "note": resolution.note,
+        # A committee linked to several candidates resolved to the most
+        # recent one. Surfaced so the caller can say a choice was made,
+        # rather than presenting a picked race as the only one.
+        "alternatives": [dict(a) for a in resolution.alternatives],
+    }
+
+
 @mcp.tool()
 async def send_deadline_invites(
     committee: str,
