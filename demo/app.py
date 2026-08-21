@@ -118,6 +118,7 @@ BRAND_NAVY_MID = "#263A4D"
 BRAND_STEEL = "#4B6B85"
 BRAND_ACCENT = "#1E88C7"
 BRAND_PURPLE = "#6E71C9"  # source citation badges -- matches the chart's first data series
+BRAND_RED = "#C0392B"  # the one thing on the page that needs fixing before it works
 BRAND_TEAL = "#3FC7C9"  # AO status badges -- matches the chart's second data series
 
 
@@ -260,6 +261,12 @@ DEADLINE_CSS = f"""
     white-space: nowrap;
 }}
 .fec-dl-kind.gen {{ background: #e7e8f7; color: {BRAND_PURPLE}; }}
+/* One line, directly under the agenda heading: this list is short a
+   committee, and which. Deliberately quiet -- the red box on the empty
+   control is what asks to be fixed; this only keeps the list honest. */
+.fec-dl-gap {{
+    font-size: 0.76rem; color: {BRAND_RED}; margin: -2px 0 8px;
+}}
 /* Deliberately amber rather than red: an unconfirmed deadline is a
    decision someone needs to make, not an error the app has hit. */
 .fec-dl-flag {{
@@ -1623,6 +1630,36 @@ _DISTRICT_NOTE = (
 )
 
 
+def _needs_status_css(entries) -> str:
+    """Outline the status box of every committee that still has none.
+
+    The state belongs on the control, not in a banner somewhere below it:
+    the thing to fix is the empty box, and marking the box says both what
+    is wrong and where to fix it in one gesture.
+
+    Streamlit tags any keyed widget's container with `st-key-<key>`, which
+    is what makes a specific row addressable from a stylesheet -- and the
+    keys here already carry the committee ID. The bordered control itself
+    is an unlabelled div, so it is reached as the one wrapping the input
+    rather than by a class of its own, which would be a generated name
+    that changes between Streamlit builds.
+    """
+    keys = [
+        f".st-key-roster_status_{e.committee_id}"
+        for e in entries
+        if not e.has_status and re.fullmatch(r"[A-Za-z0-9]+", e.committee_id or "")
+    ]
+    if not keys:
+        return ""
+    selector = ", ".join(f"{k} div:has(> input)" for k in keys)
+    return (
+        "<style>"
+        f"{selector} {{ border-color: {BRAND_RED} !important; "
+        f"box-shadow: 0 0 0 1px {BRAND_RED}; background: #fdf3f2 !important; }}"
+        "</style>"
+    )
+
+
 def _roster_header() -> None:  # pragma: no cover -- Streamlit UI
     """Column headings for the roster.
 
@@ -1726,9 +1763,17 @@ def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
             "District", value=(entry.district or "") if districted else "", max_chars=2,
             key=f"roster_district_{entry.committee_id}",
             label_visibility="collapsed",
-            placeholder="00" if districted else "",
+            # "n/a" rather than an empty box, and rather than the sentence
+            # that used to sit under the whole table. A blank disabled box
+            # reads as a value nobody has filled in yet; "n/a" says the
+            # field does not apply, at the box it applies to. The reason
+            # it does not apply is a hover away, on the column heading.
+            #
+            # Not `help=`, which is where this note started: on an input
+            # with its label collapsed, Streamlit's help icon renders on
+            # the label and so never appears at all.
+            placeholder="00" if districted else ("n/a" if races else ""),
             disabled=not districted,
-            help=_DISTRICT_NOTE if not districted and races else None,
         ).strip()
 
     if races and (
@@ -1963,30 +2008,11 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
     # So the roster is just a table, always on screen. It costs about
     # 56px a committee, which is affordable because each row is one line.
     st.markdown("#### Your committees")
-    if entries:
-        # Every row, always, and the page scrolls if there are many.
-        #
-        # A height cap was tried here and removed. It put the roster in
-        # its own scroll box inside an already-scrolling page, clipped a
-        # row mid-height at the boundary, and took the column headings
-        # away with it -- sticky cannot hold them, since each heading
-        # lives in its own one-row column and a sticky element cannot
-        # outlive its parent's box. Rows nobody can see and boxes nobody
-        # can name is a worse trade than a longer page.
-        _roster_header()
-        for i, entry in enumerate(entries):
-            _roster_row(entry, i)
-        # Said in full rather than left to a tooltip. A disabled box
-        # explains that a district cannot be entered, not why -- and the
-        # reason is the part worth knowing, since a district is what makes
-        # one House race distinct from the next one over.
-        st.caption(
-            "District applies to House committees only — a Senate seat is statewide "
-            "and the presidency is national, so neither has one."
-        )
-    else:
-        st.caption("Add a committee to see which FEC deadlines bind it.")
 
+    # Above the table, not below it. The roster grows and the search box
+    # was riding down with it -- at eight committees the way to add a
+    # ninth had scrolled off, which is the one thing on this screen whose
+    # position should not depend on how much is already on it.
     picked = _committee_step()
     if picked:
         # Adding one already on the roster is a no-op by design -- it must
@@ -2007,23 +2033,43 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
     if already:
         st.info(f"{already} is already on your roster — its status was left as it is.")
 
+    if entries:
+        # Every committee still missing a status gets its status box
+        # outlined in red, in place of a warning further down the page.
+        st.markdown(_needs_status_css(entries), unsafe_allow_html=True)
+        # Every row, always, and the page scrolls if there are many.
+        #
+        # A height cap was tried here and removed. It put the roster in
+        # its own scroll box inside an already-scrolling page, clipped a
+        # row mid-height at the boundary, and took the column headings
+        # away with it -- sticky cannot hold them, since each heading
+        # lives in its own one-row column and a sticky element cannot
+        # outlive its parent's box. Rows nobody can see and boxes nobody
+        # can name is a worse trade than a longer page.
+        _roster_header()
+        for i, entry in enumerate(entries):
+            _roster_row(entry, i)
+    else:
+        st.caption("Add a committee to see which FEC deadlines bind it.")
+
     if not entries:
         return
 
     st.divider()
 
-    if missing:
-        # Named, not merely counted: with several committees it has to be
-        # obvious WHICH one is missing from the agenda below. It also says
-        # where to go, since the panel it means can be closed by then.
-        st.warning(
-            "**No deadlines shown for "
-            + ", ".join(e.name for e in missing)
-            + "** — pick where each is in its cycle, above. Nothing is assumed, because "
-            "a wrong status produces a complete but wrong schedule."
-        )
-
     st.markdown("#### Everything due · rest of the cycle")
+    if missing:
+        # What the red boxes above cannot say: that this list is short a
+        # committee. Naming them here is not a duplicate of the outline --
+        # the outline marks what to fix, this marks what is missing
+        # because it has not been. A silently incomplete agenda is the one
+        # outcome this view must never produce.
+        st.markdown(
+            f'<div class="fec-dl-gap">Not listed: '
+            f'{html.escape(", ".join(e.name for e in missing))} — '
+            "no status set (outlined in red above).</div>",
+            unsafe_allow_html=True,
+        )
     with st.spinner("Reading the FEC calendar..."):
         _combined_agenda(entries)
 
