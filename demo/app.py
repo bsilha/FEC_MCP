@@ -1864,29 +1864,25 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
     missing = [e for e in entries if not e.has_status]
 
     # The roster is setup; the agenda is what gets looked at daily. So the
-    # roster opens only while it still needs attention -- a committee with
-    # no status, or none added yet -- and otherwise sits collapsed above
-    # the agenda rather than pushing it off the screen. Its label carries
-    # the state, so nothing is hidden by being closed.
-    if not entries:
-        summary = "Your committees — none yet"
-    elif missing:
-        summary = (
-            f"Your committees ({len(entries)}) — "
-            f"{len(missing)} still need a status"
-        )
-    else:
-        summary = f"Your committees ({len(entries)})"
-
-    # Decided once per session, not recomputed each rerun. Recomputing it
-    # means the panel slams shut the instant the last status is picked --
-    # while the cursor is still in it, and usually before the state and
-    # district beside that status have been filled in. After the first
-    # render this is the user's own open/closed choice to make.
-    if "dl_roster_open" not in st.session_state:
-        st.session_state["dl_roster_open"] = bool(missing) or not entries
-
-    with st.expander(summary, expanded=st.session_state["dl_roster_open"]):
+    # roster starts open only while it still needs attention -- a committee
+    # with no status, or none added yet -- and otherwise starts collapsed
+    # above the agenda rather than pushing it off the screen.
+    #
+    # `expanded` is a starting value, NOT a binding one: an expander keeps
+    # whatever the user last set it to for as long as its LABEL stays the
+    # same, and re-reads `expanded` the moment the label changes, because
+    # the label is part of the widget's identity. Confirmed directly in
+    # the browser -- open the panel by hand, rerun with the same label and
+    # it stays open; rerun with a changed label and it snaps back shut.
+    #
+    # So this label is fixed. It used to count the committees and say how
+    # many still needed a status, which meant every add and every delete
+    # changed it -- and the panel rolled up on exactly the two actions
+    # taken from inside it, hiding the committee just added and, when the
+    # new one had no status yet, closing the drawer the warning below was
+    # pointing at. The count is not worth that: the agenda lists every
+    # committee, and the warning names the ones still missing a status.
+    with st.expander("Your committees", expanded=bool(missing) or not entries):
         if entries:
             _roster_header()
             for i, entry in enumerate(entries):
@@ -1895,9 +1891,18 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
             st.caption("Add a committee to see which FEC deadlines bind it.")
 
         st.markdown("")
-        # Stays open once someone is adding: people arrive with several
-        # committees at once, and collapsing after each would cost a click
-        # per committee to reopen.
+        # A fixed label is not enough for this one. An expander is also
+        # identified by its POSITION, and every committee added puts
+        # another roster row above this panel -- so it re-reads `expanded`
+        # after each add no matter what its label says, and collapses.
+        # Confirmed in the browser: added a committee from inside this
+        # panel and watched it shut with the search box still filled in.
+        #
+        # Hence the explicit flag. People arrive with several committees
+        # at once, and a panel that closed after each would cost a click
+        # per committee. Closing it by hand still sticks -- nothing moves
+        # above it then, so the position holds and this value is not
+        # consulted again.
         with st.expander(
             "＋ Add a committee", expanded=st.session_state.get("dl_add_open", not entries)
         ):
@@ -1914,12 +1919,14 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
 
     if missing:
         # Named, not merely counted: with several committees it has to be
-        # obvious WHICH one is missing from the agenda below.
+        # obvious WHICH one is missing from the agenda below. It also says
+        # where to go, since the panel it means can be closed by then.
         st.warning(
             "**No deadlines shown for "
             + ", ".join(e.name for e in missing)
-            + "** — pick where each is in its cycle. Nothing is assumed, because a "
-            "wrong status produces a complete but wrong schedule."
+            + "** — open **Your committees** above and pick where each is in its cycle. "
+            "Nothing is assumed, because a wrong status produces a complete but wrong "
+            "schedule."
         )
 
     st.markdown("#### Everything due · rest of the cycle")
