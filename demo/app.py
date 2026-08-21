@@ -129,35 +129,101 @@ BRAND_TEAL = "#3FC7C9"  # AO status badges -- matches the chart's second data se
 # primary" and the pre-general and post-general vanish -- and the raw enum
 # values ("won_primary") give no hint of that. Someone picking from a list
 # should be able to see what their answer changes before they commit to it.
-STATUS_CHOICES: list[tuple[str, str, str]] = [
-    ("in_primary", "Still in the primary", "Pre-primary report only; no general-election reports yet"),
-    ("won_primary", "Won the primary", "Adds the 12G pre-general and 30G post-general"),
-    ("lost_primary", "Lost the primary", "Drops both general-election reports; regular filing continues"),
-    ("won_general", "Won the general", "Post-general still due; continues into the next cycle"),
-    ("lost_general", "Lost the general", "Post-general still due; filing continues until termination"),
-    ("terminating", "Winding down", "Regular reports only, until the termination report"),
-    ("ongoing", "PAC or party committee", "No primary or general of its own to win or lose"),
+#
+# Each row carries the consequence twice, because a dropdown shows its
+# selected option in a fixed-width box and clips whatever overruns it. The
+# short form rides along inside the option text, where it survives that
+# clipping; the long form lives in the column header's tooltip, which has
+# no width limit. Verified live: at this column width the long form was
+# cut at "Adds the 12G pre-general and 3", which is worse than no hint --
+# it looks like a value that ran out rather than a sentence.
+STATUS_CHOICES: list[tuple[str, str, str, str]] = [
+    ("in_primary", "Still in the primary", "pre-primary only",
+     "Pre-primary report only; no general-election reports yet"),
+    ("won_primary", "Won the primary", "adds 12G + 30G",
+     "Adds the 12G pre-general and 30G post-general"),
+    ("lost_primary", "Lost the primary", "no general reports",
+     "Drops both general-election reports; regular filing continues"),
+    ("won_general", "Won the general", "30G still due",
+     "Post-general still due; continues into the next cycle"),
+    ("lost_general", "Lost the general", "30G still due",
+     "Post-general still due; filing continues until termination"),
+    ("terminating", "Winding down", "regular reports only",
+     "Regular reports only, until the termination report"),
+    ("ongoing", "PAC or party committee", "no primary or general",
+     "No primary or general of its own to win or lose"),
 ]
 
-_STATUS_LABELS = {value: label for value, label, _ in STATUS_CHOICES}
-_STATUS_HINTS = {value: hint for value, _, hint in STATUS_CHOICES}
+_STATUS_LABELS = {value: label for value, label, _, _ in STATUS_CHOICES}
+_STATUS_HINTS = {value: hint for value, _, hint, _ in STATUS_CHOICES}
+_STATUS_DETAIL = {value: detail for value, _, _, detail in STATUS_CHOICES}
 
 VIEW_SWITCH_CSS = """
 <style>
 /* The Chat/Deadlines switch is navigation, not another paragraph of the
    page intro it sits directly beneath -- without space above it, it reads
    as part of that sentence. The rule below it gives the same "content
-   starts here" edge a tab bar would. */
+   starts here" edge a tab bar would.
+
+   Targeted by the container around the control, not the control itself:
+   st.segmented_control renders with data-testid="stButtonGroup" in this
+   Streamlit version, so the "stSegmentedControl" selector this rule was
+   originally written against matched nothing and the spacing it describes
+   was never actually on screen -- the switch sat flush against the last
+   line of the intro paragraph. Verified live in the DOM. Both selectors
+   are kept so the rule survives Streamlit renaming it either way. */
+[data-testid="stElementContainer"]:has(> [data-testid="stButtonGroup"]),
 [data-testid="stSegmentedControl"] {
     margin: 18px 0 4px;
     padding-bottom: 14px;
     border-bottom: 1px solid #d8dee3;
+    /* The container shrink-wraps the two buttons, so without this the
+       rule underlines the switch instead of dividing the page. */
+    width: 100%;
 }
 </style>
 """
 
+# How old a status has to be before the UI questions it. Roughly a
+# quarter: long enough that a primary or general has plausibly happened
+# since, short enough to catch it before the next filing.
+_STATUS_STALE_AFTER_DAYS = 90
+
 DEADLINE_CSS = f"""
 <style>
+/* Reclaim the top of the page. Rendered only on this view, so the chat
+   page keeps its own spacing.
+
+   Two separate costs, both measured live. Streamlit's default 96px of
+   block padding was sized for a page that opens with a title; this one
+   opens with a working list, and the fixed header bar above it already
+   ends well clear of the content. And every st.markdown() that injects
+   nothing but a <style> block still renders an element container --
+   zero-height, but each one consumes a 16px flex gap, which came to 64px
+   of nothing before the first real widget. Hiding those containers does
+   not disable their rules: a <style> element applies whether or not its
+   ancestors are displayed. */
+[data-testid="stMainBlockContainer"] {{ padding-top: 1.6rem; }}
+[data-testid="stElementContainer"]:has(style) {{ display: none; }}
+/* Roster rows are a table, not a form -- one line each, so eight
+   committees stay readable and the agenda below stays on screen. */
+.fec-roster-head {{
+    font-size: 0.66rem; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; color: {BRAND_STEEL};
+    border-bottom: 1px solid #e3e8ec; padding-bottom: 4px;
+}}
+.fec-roster-head span {{
+    border-bottom: 1px dotted {BRAND_STEEL}; cursor: help;
+    text-transform: none; letter-spacing: 0; font-weight: 600; opacity: .8;
+}}
+.fec-roster-name {{
+    font-weight: 700; font-size: 0.86rem; color: {BRAND_NAVY_DARK};
+    line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}}
+.fec-roster-sub {{ font-size: 0.72rem; color: {BRAND_STEEL}; line-height: 1.3; }}
+/* Amber, not red: a status nobody has revisited is a question, not a
+   failure -- it may well still be right. */
+.fec-roster-aged {{ color: #8a5a12; font-weight: 600; }}
 /* One deadline per row. Date first and fixed-width so the column reads as
    a timeline when scanned vertically, which is how someone checks "what's
    next" -- the thing this view exists to answer. */
@@ -208,10 +274,13 @@ def _agenda_row_html(row: dict[str, Any]) -> str:
     family = (row.get("report_type") or "").replace("_", "-").upper() or "DEADLINE"
     is_general = "GENERAL" in family
     flag = "" if row.get("certain", True) else '<span class="fec-dl-flag">CONFIRM</span>'
+    # Committee names are clipped to keep the column aligned, and long ones
+    # do get clipped -- so the full name hangs off the element as a title.
+    who = str(row.get("_committee") or "")
     return (
         '<div class="fec-dl-row">'
         f'<span class="fec-dl-date">{html.escape(str(row.get("date") or ""))}</span>'
-        f'<span class="fec-dl-who">{html.escape(str(row.get("_committee") or ""))}</span>'
+        f'<span class="fec-dl-who" title="{html.escape(who, quote=True)}">{html.escape(who)}</span>'
         f'<span class="fec-dl-name">{html.escape(str(row.get("deadline") or ""))}</span>'
         f"{flag}"
         f'<span class="fec-dl-kind{" gen" if is_general else ""}">{html.escape(family)}</span>'
@@ -1494,21 +1563,83 @@ def _match_button(match: dict[str, Any], key: str) -> None:  # pragma: no cover 
     st.rerun()
 
 
-def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
-    """One committee on the roster, with its own status and race.
+def _status_age_note(entry) -> str | None:
+    """A nudge when a status is old enough to be doubted, and nothing when
+    it isn't.
 
-    Status is per committee and cannot be shared: each one sits somewhere
-    different in its cycle, and that alone decides its deadline set.
+    Showing "set 2026-08-20" on every row the day it was set is noise on
+    every row forever. What actually matters is the opposite case: a race
+    resolved months ago and nobody updated the app, so "still in the
+    primary" is quietly wrong. Only that case gets a line.
     """
-    name_col, status_col, state_col, dist_col, drop_col = st.columns([4, 4, 1.2, 1.2, 0.8])
+    if not entry.status_set_on:
+        return None
+    try:
+        age = (date.today() - date.fromisoformat(entry.status_set_on)).days
+    except (TypeError, ValueError):
+        return None
+    if age < _STATUS_STALE_AFTER_DAYS:
+        return None
+    months = age // 30
+    return f"⚠ set {months} month{'s' if months != 1 else ''} ago — still current?"
+
+
+_ROSTER_COLUMNS = [4.2, 4, 0.9, 0.9, 0.6]
+
+
+def _roster_header() -> None:  # pragma: no cover -- Streamlit UI
+    """Column headings for the roster.
+
+    The two-character boxes at the end of each row are unlabeled otherwise,
+    and the status column's full consequence text has nowhere else to live
+    now that the options themselves carry only the short form -- so it
+    hangs off this heading as a tooltip, stated once for all seven
+    statuses instead of once per row forever.
+    """
+    detail = " · ".join(f"{label}: {_STATUS_DETAIL[value]}" for value, label, _, _ in STATUS_CHOICES)
+    cols = st.columns(_ROSTER_COLUMNS, vertical_alignment="bottom")
+    for col, text in zip(
+        cols,
+        [
+            "Committee",
+            "Where it is in the cycle "
+            f'<span title="{html.escape(detail, quote=True)}">what each means</span>',
+            "State",
+            "Dist",
+            "",
+        ],
+    ):
+        with col:
+            st.markdown(f'<div class="fec-roster-head">{text}</div>', unsafe_allow_html=True)
+
+
+def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
+    """One committee on the roster, kept to a single line.
+
+    Status is per committee and cannot be shared: each sits somewhere
+    different in its cycle, and that alone decides its deadline set. The
+    consequence of each status lives in the dropdown's own option text,
+    where it is read at the moment of choosing, rather than as a caption
+    that repeats under every row forever once the choice is made.
+    """
+    name_col, status_col, state_col, dist_col, drop_col = st.columns(
+        _ROSTER_COLUMNS, vertical_alignment="center"
+    )
 
     with name_col:
         frequency = (entry.filing_frequency or "").upper()
         readable = {"Q": "quarterly", "M": "monthly"}.get(frequency, "unknown")
+        # The staleness nudge rides on this line rather than under the
+        # dropdown. Anything below the dropdown makes that one cell taller
+        # than the rest, and centered columns then push its control out of
+        # line with the name beside it -- verified live: the row with a
+        # nudge sat 20px off every other row.
+        aged = _status_age_note(entry)
+        note = f' · <span class="fec-roster-aged">{html.escape(aged)}</span>' if aged else ""
         st.markdown(
-            f"**{html.escape(entry.name)}**<br>"
-            f'<span style="color:{BRAND_STEEL};font-size:0.72rem">'
-            f"{entry.committee_id} · {readable} filer</span>",
+            f'<div class="fec-roster-name" title="{html.escape(entry.name, quote=True)}">'
+            f"{html.escape(entry.name)}</div>"
+            f'<div class="fec-roster-sub">{entry.committee_id} · {readable}{note}</div>',
             unsafe_allow_html=True,
         )
 
@@ -1518,7 +1649,7 @@ def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
             if entry.is_candidate_committee
             else [c for c in STATUS_CHOICES if c[0] in {"ongoing", "terminating"}]
         )
-        options = [UNSET_STATUS] + [value for value, _, _ in choices]
+        options = [UNSET_STATUS] + [value for value, _, _, _ in choices]
         current = entry.status if entry.status in options else UNSET_STATUS
         picked = st.selectbox(
             "Status",
@@ -1527,31 +1658,37 @@ def _roster_row(entry, index: int) -> None:  # pragma: no cover -- Streamlit UI
             # Never defaulted: a guessed status yields a complete,
             # confident, wrong schedule, and nothing about a wrong
             # schedule looks wrong.
-            format_func=lambda v: "— pick where it is —" if not v else _STATUS_LABELS[v],
+            format_func=lambda v: (
+                "— pick where it is —" if not v
+                else f"{_STATUS_LABELS[v]} — {_STATUS_HINTS[v]}"
+            ),
             key=f"roster_status_{entry.committee_id}",
             label_visibility="collapsed",
         )
         if picked != entry.status:
             _roster().update(entry.committee_id, status=picked)
             st.rerun()
-        if entry.has_status:
-            st.caption(_STATUS_HINTS[entry.status])
-            if entry.status_set_on:
-                st.caption(f"set {entry.status_set_on}")
 
+    # A race is meaningless for a PAC, which has no single one, so these
+    # boxes are emptied rather than greyed out around a value. The state
+    # seeded from the committee's own record is a mailing address, and a
+    # greyed "MA" beside a national PAC reads as a claim about a race.
+    races = entry.is_candidate_committee
     with state_col:
         state = st.text_input(
-            "State", value=entry.state or "", max_chars=2,
+            "State", value=(entry.state or "") if races else "", max_chars=2,
             key=f"roster_state_{entry.committee_id}",
-            label_visibility="collapsed", placeholder="ST",
-            disabled=not entry.is_candidate_committee,
+            label_visibility="collapsed",
+            placeholder="ST" if races else "",
+            disabled=not races,
         ).strip().upper()
     with dist_col:
         district = st.text_input(
-            "District", value=entry.district or "", max_chars=2,
+            "District", value=(entry.district or "") if races else "", max_chars=2,
             key=f"roster_district_{entry.committee_id}",
-            label_visibility="collapsed", placeholder="00",
-            disabled=not entry.is_candidate_committee,
+            label_visibility="collapsed",
+            placeholder="00" if races else "",
+            disabled=not races,
         ).strip()
 
     if entry.is_candidate_committee and (
@@ -1724,32 +1861,57 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
     roster = _roster()
     entries = roster.entries()
 
-    st.markdown("**Your committees**", unsafe_allow_html=True)
-    if entries:
-        for i, entry in enumerate(entries):
-            _roster_row(entry, i)
-            st.divider()
-    else:
-        st.caption("No committees yet — add one below to see what it owes.")
+    missing = [e for e in entries if not e.has_status]
 
-    # Stays open once someone is adding: people arrive with several
-    # committees at once, and collapsing after each one would cost a click
-    # per committee to reopen.
-    with st.expander(
-        "＋ Add a committee", expanded=st.session_state.get("dl_add_open", not entries)
-    ):
-        picked = _committee_step()
-        if picked:
-            roster.add(picked)
-            st.session_state["dl_add_open"] = True
-            for key in ("dl_committee", "dl_matches", "dl_dropped", "dl_query"):
-                st.session_state.pop(key, None)
-            st.rerun()
+    # The roster is setup; the agenda is what gets looked at daily. So the
+    # roster opens only while it still needs attention -- a committee with
+    # no status, or none added yet -- and otherwise sits collapsed above
+    # the agenda rather than pushing it off the screen. Its label carries
+    # the state, so nothing is hidden by being closed.
+    if not entries:
+        summary = "Your committees — none yet"
+    elif missing:
+        summary = (
+            f"Your committees ({len(entries)}) — "
+            f"{len(missing)} still need a status"
+        )
+    else:
+        summary = f"Your committees ({len(entries)})"
+
+    # Decided once per session, not recomputed each rerun. Recomputing it
+    # means the panel slams shut the instant the last status is picked --
+    # while the cursor is still in it, and usually before the state and
+    # district beside that status have been filled in. After the first
+    # render this is the user's own open/closed choice to make.
+    if "dl_roster_open" not in st.session_state:
+        st.session_state["dl_roster_open"] = bool(missing) or not entries
+
+    with st.expander(summary, expanded=st.session_state["dl_roster_open"]):
+        if entries:
+            _roster_header()
+            for i, entry in enumerate(entries):
+                _roster_row(entry, i)
+        else:
+            st.caption("Add a committee to see which FEC deadlines bind it.")
+
+        st.markdown("")
+        # Stays open once someone is adding: people arrive with several
+        # committees at once, and collapsing after each would cost a click
+        # per committee to reopen.
+        with st.expander(
+            "＋ Add a committee", expanded=st.session_state.get("dl_add_open", not entries)
+        ):
+            picked = _committee_step()
+            if picked:
+                roster.add(picked)
+                st.session_state["dl_add_open"] = True
+                for key in ("dl_committee", "dl_matches", "dl_dropped", "dl_query"):
+                    st.session_state.pop(key, None)
+                st.rerun()
 
     if not entries:
         return
 
-    missing = [e for e in entries if not e.has_status]
     if missing:
         # Named, not merely counted: with several committees it has to be
         # obvious WHICH one is missing from the agenda below.
@@ -1760,8 +1922,7 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
             "wrong status produces a complete but wrong schedule."
         )
 
-    st.divider()
-    st.markdown("**Everything due · rest of the cycle**", unsafe_allow_html=True)
+    st.markdown("#### Everything due · rest of the cycle")
     with st.spinner("Reading the FEC calendar..."):
         _combined_agenda(entries)
 
@@ -1776,6 +1937,21 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     st.markdown(HEADER_CSS, unsafe_allow_html=True)
     st.markdown(CHAT_BUBBLE_CSS, unsafe_allow_html=True)
     st.markdown(VIEW_SWITCH_CSS, unsafe_allow_html=True)
+    # The title and blurb introduce the demo, which is worth doing once on
+    # the way in and not worth ~150px above a working list. Read from the
+    # previous run's selection, since the view switch is rendered further
+    # down; on the very first run there is none, and Chat is the default.
+    on_deadlines = st.session_state.get("active_view") == "Deadlines"
+    page_heading = (
+        ""
+        if on_deadlines
+        else (
+            '<div class="fec-page-heading"><h2>FEC Compliance Assistant</h2>'
+            "<p>Same tools as the fec-mcp MCP server &mdash; rulebook PDF search + live "
+            "OpenFEC data &mdash; wired into a plain chat page for demo purposes. Not for "
+            "production use.</p></div>"
+        )
+    )
     st.markdown(
         '<div class="fec-header-overlay">'
         '<div class="fec-topbar"><div class="badge">A</div>'
@@ -1783,11 +1959,7 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         '<div class="fec-subbar">HOME&nbsp;&nbsp;&middot;&nbsp;&nbsp;RULEBOOKS&nbsp;&nbsp;'
         "&middot;&nbsp;&nbsp;CANDIDATES &amp; COMMITTEES&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
         "ADVISORY OPINIONS</div>"
-        "</div>"
-        '<div class="fec-page-heading"><h2>FEC Compliance Assistant</h2>'
-        "<p>Same tools as the fec-mcp MCP server &mdash; rulebook PDF search + live OpenFEC "
-        "data &mdash; wired into a plain chat page for demo purposes. Not for production "
-        "use.</p></div>",
+        "</div>" + page_heading,
         unsafe_allow_html=True,
     )
 
