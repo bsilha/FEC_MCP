@@ -1514,6 +1514,25 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
     # after the committee had been added, as if the search were still
     # pending. A key that changes is a different widget, which is the one
     # reliable way to get an empty box back.
+    # Streamlit writes its own hint under an edited text input, and inside
+    # a form that hint reads "Press Enter to submit form" -- accurate, and
+    # about the widget rather than about what happens. There is no API for
+    # its wording, so the span is collapsed to nothing and the replacement
+    # comes from a ::after on the same element: it inherits the position
+    # Streamlit already gave the hint, so nothing has to be placed by
+    # hand. Scoped to this one input's key, so the hint on the roster's
+    # own state and district boxes -- where "apply" IS what Enter does --
+    # is untouched. 12px/60% grey are the values Streamlit computes for
+    # it, read off the live element rather than guessed.
+    field = f"dl_query_{st.session_state.get('dl_query_round', 0)}"
+    st.markdown(
+        f"<style>.st-key-{field} [data-testid='InputInstructions'] {{ font-size: 0; }}"
+        f".st-key-{field} [data-testid='InputInstructions']::after {{"
+        '  content: "Press Enter to search"; font-size: 12px;'
+        "  color: rgba(49, 51, 63, 0.6); }</style>",
+        unsafe_allow_html=True,
+    )
+
     # A form, so that Enter searches.
     #
     # A bare text input plus a button does not do that, and worse, says it
