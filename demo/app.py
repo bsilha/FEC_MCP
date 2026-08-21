@@ -1514,20 +1514,43 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
     # after the committee had been added, as if the search were still
     # pending. A key that changes is a different widget, which is the one
     # reliable way to get an empty box back.
-    field_col, button_col = st.columns([5, 1], vertical_alignment="bottom")
-    with field_col:
-        query = st.text_input(
-            "Add a committee — name or FEC ID",
-            placeholder="Eli Crane for Congress    —or—    C00784934",
-            help=(
-                "Matches the committee's own name or FEC ID. The FEC's search also "
-                "returns committees matching elsewhere in their records, such as the "
-                "candidate's name; those are filtered out here."
-            ),
-            key=f"dl_query_{st.session_state.get('dl_query_round', 0)}",
-        )
-    with button_col:
-        find = st.button("Find committee", type="primary", use_container_width=True)
+    # A form, so that Enter searches.
+    #
+    # A bare text input plus a button does not do that, and worse, says it
+    # does: Streamlit puts "Press Enter to apply" under a text input as
+    # soon as it is edited, and pressing Enter genuinely commits the value
+    # -- it just does not run anything, because only the button was wired
+    # to search. A form submits on Enter natively, so the hint and the
+    # behaviour finally agree.
+    #
+    # It also fixes a subtler thing than the keystroke. Widgets in a form
+    # do not report changes until submit, so nothing searches on blur --
+    # clicking away from a half-typed name cannot fire a lookup for it.
+    with st.form(f"dl_add_{st.session_state.get('dl_query_round', 0)}", border=False):
+        field_col, button_col = st.columns([5, 1], vertical_alignment="bottom")
+        with field_col:
+            # The key carries a counter, bumped every time a committee is
+            # added. Deleting a text input's key does NOT clear the box:
+            # the widget is still mounted on the frontend, which hands its
+            # value straight back on the next run -- so the previous
+            # search term sat in the field after the committee had been
+            # added, as if the search were still pending. A key that
+            # changes is a different widget, which is the one reliable way
+            # to get an empty box back.
+            query = st.text_input(
+                "Add a committee — name or FEC ID",
+                placeholder="Eli Crane for Congress    —or—    C00784934",
+                help=(
+                    "Matches the committee's own name or FEC ID. The FEC's search also "
+                    "returns committees matching elsewhere in their records, such as the "
+                    "candidate's name; those are filtered out here."
+                ),
+                key=f"dl_query_{st.session_state.get('dl_query_round', 0)}",
+            )
+        with button_col:
+            find = st.form_submit_button(
+                "Find committee", type="primary", use_container_width=True
+            )
     if find and query.strip():
         text = query.strip()
         with st.spinner("Searching OpenFEC..."):
