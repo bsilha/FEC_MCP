@@ -224,9 +224,13 @@ DEADLINE_CSS = f"""
 .fec-roster-head span.hdr {{
     text-transform: uppercase; letter-spacing: .06em; font-weight: 700; opacity: 1;
 }}
+/* Wraps rather than clips, for the same reason as the agenda's name
+   column: a truncated committee name is not a committee name, and this
+   is the row where someone sets a status that decides that committee's
+   whole schedule. A long name costs a second line here. */
 .fec-roster-name {{
     font-weight: 700; font-size: 0.86rem; color: {BRAND_NAVY_DARK};
-    line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    line-height: 1.25; overflow-wrap: anywhere;
 }}
 .fec-roster-sub {{ font-size: 0.72rem; color: {BRAND_STEEL}; line-height: 1.3; }}
 /* Amber, not red: a status nobody has revisited is a question, not a
@@ -245,10 +249,14 @@ DEADLINE_CSS = f"""
 .fec-dl-wrap {{ border: 1px solid #d8dee3; border-radius: 8px; overflow: hidden; }}
 .fec-dl-date {{ font-weight: 700; width: 84px; flex-shrink: 0; color: {BRAND_NAVY_MID}; }}
 /* Fixed width so committee names line up as a column down the page --
-   with several committees, "whose is this" is what gets scanned for. */
+   with several committees, "whose is this" is what gets scanned for.
+   Fixed width, but NOT one line: names that overran used to be cut off
+   with an ellipsis, and "ALEXANDRIA OCASIO-CORTEZ FOR ..." does not
+   identify a committee, which is the column's whole job. They wrap
+   instead, so the row grows and the name survives. */
 .fec-dl-who {{
-    width: 200px; flex-shrink: 0; font-weight: 600; font-size: 0.79rem;
-    color: {BRAND_STEEL}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    width: 260px; flex-shrink: 0; font-weight: 600; font-size: 0.79rem;
+    color: {BRAND_STEEL}; line-height: 1.25; overflow-wrap: anywhere;
 }}
 .fec-dl-name {{ flex: 1; color: {BRAND_NAVY_DARK}; }}
 .fec-dl-month {{
@@ -261,6 +269,12 @@ DEADLINE_CSS = f"""
     white-space: nowrap;
 }}
 .fec-dl-kind.gen {{ background: #e7e8f7; color: {BRAND_PURPLE}; }}
+/* The reason a deadline was ruled out. Right-aligned and quieter than
+   the deadline it explains, so the column reads as annotation. */
+.fec-dl-why {{
+    flex: 1.4; text-align: right; font-size: 0.74rem; color: {BRAND_STEEL};
+    line-height: 1.3;
+}}
 /* One line, directly under the agenda heading: this list is short a
    committee, and which. Deliberately quiet -- the red box on the empty
    control is what asks to be fixed; this only keeps the list honest. */
@@ -1889,6 +1903,7 @@ def _combined_agenda(entries) -> None:  # pragma: no cover -- Streamlit UI
     ready = [e for e in entries if e.has_status]
 
     rows: list[dict[str, Any]] = []
+    ruled_out: list[dict[str, Any]] = []
     problems: list[str] = []
     for entry in ready:
         result = _run_async(
@@ -1901,6 +1916,8 @@ def _combined_agenda(entries) -> None:  # pragma: no cover -- Streamlit UI
             continue
         for deadline in result.get("deadlines") or []:
             rows.append({**deadline, "_committee": entry.name})
+        for dropped in result.get("excluded") or []:
+            ruled_out.append({**dropped, "_committee": entry.name})
         for warning in result.get("warnings") or []:
             problems.append(f"{entry.name}: {warning}")
 
@@ -1938,6 +1955,56 @@ def _combined_agenda(entries) -> None:  # pragma: no cover -- Streamlit UI
         st.caption(
             f"{len(unverified)} marked CONFIRM could not be settled automatically — "
             "listed rather than hidden so nothing is missed, but check whether each applies."
+        )
+
+    _ruled_out_panel(ruled_out)
+
+
+def _ruled_out_panel(ruled_out) -> None:  # pragma: no cover -- Streamlit UI
+    """Every deadline that was checked and does not apply, and why.
+
+    The list above is a set of claims about what a committee does not
+    owe, and those are worth as much as the ones about what it does --
+    more, when one is wrong. Showing the reasoning turns "the app didn't
+    mention the pre-general" into "the pre-general was ruled out because
+    this committee lost its primary", which is a statement someone can
+    disagree with. That is the point.
+
+    Collapsed, because it is long by nature -- every date on the FEC's
+    calendar that was considered and set aside, for each committee.
+
+    The label deliberately carries no count. An expander re-reads whether
+    it should be open whenever its label changes, so a count would slam
+    this shut the moment anything upstream changed while somebody was
+    reading it.
+    """
+    if not ruled_out:
+        return
+
+    ruled_out.sort(key=lambda r: (r["_committee"], r.get("date") or ""))
+    with st.expander("Checked and not due — and why"):
+        st.caption(
+            f"{len(ruled_out)} calendar entries were considered and ruled out. "
+            "If one of these should apply, the committee's status or race is "
+            "probably not what the roster says."
+        )
+        current = None
+        parts: list[str] = []
+        for row in ruled_out:
+            if row["_committee"] != current:
+                current = row["_committee"]
+                parts.append(
+                    f'<div class="fec-dl-month">{html.escape(current)}</div>'
+                )
+            parts.append(
+                '<div class="fec-dl-row">'
+                f'<span class="fec-dl-date">{html.escape(_us_date(row.get("date")))}</span>'
+                f'<span class="fec-dl-name">{html.escape(str(row.get("deadline") or ""))}</span>'
+                f'<span class="fec-dl-why">{html.escape(str(row.get("reason") or ""))}</span>'
+                "</div>"
+            )
+        st.markdown(
+            f'<div class="fec-dl-wrap">{"".join(parts)}</div>', unsafe_allow_html=True
         )
 
 
