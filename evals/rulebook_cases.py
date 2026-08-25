@@ -24,6 +24,15 @@ from typing import Callable
 
 # Every tool name in demo/app.py's TOOLS list, for the "expect zero tool
 # calls at all" negative-control case below.
+#
+# This list going stale is a silent hole rather than an error: rb-20 only
+# fails on a tool it knows to forbid, so any tool missing here is one the
+# model may call on a plain arithmetic question without the case
+# noticing. It had already drifted once -- the two deadline tools were
+# added to the app months after the eval was written, and rb-20 stopped
+# covering them without anything going red. test_eval_rulebook.py now
+# asserts this matches the app's own list, so the next addition fails
+# loudly instead.
 ALL_TOOLS = (
     "list_rulebook_jurisdictions",
     "list_rulebook_sources",
@@ -40,6 +49,8 @@ ALL_TOOLS = (
     "search_filings",
     "search_elections",
     "get_reporting_calendar",
+    "get_committee_deadlines",
+    "send_deadline_invites",
     "search_advisory_opinions",
     "get_advisory_opinion",
 )

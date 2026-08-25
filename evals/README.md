@@ -15,9 +15,9 @@ itself uses, so nothing here is a mock.
 ## What it checks
 
 Every case in `rulebook_cases.py` is one natural-language question, run
-through the real `run_turn()` with the full 17-tool set registered (not
-just the rulebook tools), and graded on two axes, both deterministic --
-no LLM judge:
+through the real `run_turn()` with every tool the app registers (not just
+the rulebook ones), and graded on two axes, both deterministic -- no LLM
+judge:
 
 1. **Tool selection** -- did the model call at least one of the expected
    tools, and none of the forbidden ones? A few cases also assert on

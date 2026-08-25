@@ -127,3 +127,32 @@ def test_all_cases_expect_or_forbid_something():
     slipping in unnoticed."""
     for case in rulebook_cases.CASES:
         assert case.expect_any_of or case.forbid, f"{case.id} asserts nothing"
+
+
+def test_all_tools_matches_the_tool_set_the_app_registers():
+    """Regression guard for a hole that opens by itself.
+
+    rb-20 asks a plain arithmetic question and forbids ALL_TOOLS, so any
+    tool missing from that tuple is one the model may reach for without
+    the case noticing. Nothing goes red when it drifts -- the eval keeps
+    passing, just checking less.
+
+    It had already drifted: the two deadline tools were added to the app
+    long after the eval was written, and rb-20 quietly stopped covering
+    them. Comparing against the app's own list means the next tool added
+    fails here instead.
+    """
+    demo_app = _load(
+        "fec_mcp_demo_app_for_eval",
+        Path(__file__).resolve().parents[1] / "demo" / "app.py",
+    )
+    # .name, not .__name__: @beta_tool replaces the function with a
+    # BetaFunctionTool, and it is the name the API sees -- so it is also
+    # the name that shows up in a trace and that the eval grades against.
+    registered = {tool.name for tool in demo_app.TOOLS}
+
+    assert set(rulebook_cases.ALL_TOOLS) == registered, (
+        "ALL_TOOLS is out of step with demo/app.py's TOOLS -- "
+        f"missing: {sorted(registered - set(rulebook_cases.ALL_TOOLS))}, "
+        f"unknown: {sorted(set(rulebook_cases.ALL_TOOLS) - registered)}"
+    )

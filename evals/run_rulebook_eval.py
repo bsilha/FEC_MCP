@@ -11,9 +11,9 @@ Optional flags:
     --report PATH   Also write full per-case results as JSON to PATH.
 
 Every case sends one question through demo/app.py's real run_turn() --
-same system prompt, same full tool set (all 17 tools, not just the
-rulebook ones) -- so tool selection is graded as a genuine discrimination
-task rather than a rubber stamp. Two things are checked per case, both
+same system prompt, same full tool set (every tool the app registers, not
+just the rulebook ones) -- so tool selection is graded as a genuine
+discrimination task rather than a rubber stamp. Two things are checked per case, both
 deterministically (no LLM judge):
 
 1. Tool selection -- did the model call (at least one of) the expected
