@@ -251,3 +251,64 @@ async def test_every_recipient_appears_on_the_invitation(wired):
 
     for address in RECIPIENTS:
         assert address in sent[0]["body"]
+
+
+# -- the shape of the message itself ----------------------------------------
+#
+# Not incidental structure: whether a recipient sees an invitation with
+# Accept/Decline, or a file to download and import by hand, is decided
+# entirely by the MIME tree below.
+
+
+def _message(**kwargs):
+    from fec_mcp.invite_mailer import build_message
+
+    settings = SMTPSettings(
+        host="smtp.example.com", port=587, username="u", password="p",
+        from_address="filings@example.com",
+    )
+    return build_message(
+        settings=settings,
+        recipients=RECIPIENTS,
+        subject="FEC filing deadlines",
+        body="text body",
+        ics="BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n",
+        **kwargs,
+    )
+
+
+def test_the_invitation_is_multipart_alternative_with_plain_text_first():
+    """The one structure every calendar client agrees on. text/calendar
+    goes last, as the richest alternative."""
+    message = _message()
+
+    assert message.get_content_type() == "multipart/alternative"
+    assert [part.get_content_type() for part in message.iter_parts()] == [
+        "text/plain",
+        "text/calendar",
+    ]
+
+
+def test_the_calendar_part_declares_the_request_method():
+    """Without `method` on the part, a client has no reason to treat it
+    as an invitation rather than a document."""
+    calendar = list(_message().iter_parts())[-1]
+
+    assert calendar.get_param("method") == "REQUEST"
+    assert (calendar.get_param("charset") or "").upper() == "UTF-8"
+
+
+def test_the_calendar_is_not_also_attached_as_a_file():
+    """Regression guard for the reason invitations arrived as .ics files.
+
+    A second copy of the calendar used to be attached so that clients
+    ignoring the inline part still had something openable. But attaching
+    anything wraps the message in multipart/mixed, and Gmail handed a
+    .ics with a filename shows the file rather than the invitation --
+    defeating the entire feature to be generous to a hypothetical client.
+    """
+    message = _message()
+
+    assert list(message.iter_attachments()) == []
+    assert message.get_content_type() != "multipart/mixed"
+    assert "attachment" not in (message.as_string().lower())

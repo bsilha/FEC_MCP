@@ -1283,7 +1283,7 @@ async def send_deadline_invites(
                 body=(
                     f"Calendar invitations for {committee_name} "
                     f"({committee_id}), status: {status}.\n\n"
-                    f"{len(events)} deadline(s) attached." + stale_note
+                    f"{len(events)} deadline(s) enclosed." + stale_note
                 ),
                 ics=ics,
             ),

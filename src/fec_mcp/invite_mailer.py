@@ -5,12 +5,22 @@ the part with all the correctness risk -- stays pure and testable, and
 this module holds only the parts that need credentials and a network.
 
 A calendar invitation is carried as a text/calendar MIME part with an
-explicit `method` parameter, not merely as an attached file. That
-parameter is what makes Gmail and Outlook render the message as an
-invitation with Accept/Decline, and process a CANCEL as a withdrawal
-rather than showing an unexplained .ics file. A copy is also attached as
-a file so clients that ignore the inline part still give the recipient
-something openable.
+explicit `method` parameter, not as an attached file. That parameter is
+what makes Gmail and Outlook render the message as an invitation with
+Accept/Decline rather than showing an unexplained .ics file.
+
+Deliberately NOT also attached as a file. This module used to add a
+second copy as an attachment, on the reasoning that a client ignoring
+the inline part would at least hand the recipient something openable.
+The cost of that generosity was the feature itself: attaching anything
+wraps the message in multipart/mixed, and Gmail, handed a .ics file with
+a filename beside the invitation, shows the file. Which is exactly what
+recipients reported seeing -- an attachment to download and import by
+hand, in a feature whose whole purpose is that nobody has to.
+
+So the structure below is the narrow one every calendar client agrees
+on: multipart/alternative, text/plain first, text/calendar second, and
+nothing else in the message.
 """
 
 from __future__ import annotations
@@ -72,9 +82,19 @@ def build_message(
     subject: str,
     body: str,
     ics: str,
-    filename: str = "fec-deadlines.ics",
 ) -> EmailMessage:
     """Assemble an invitation email carrying an iCalendar payload.
+
+    Produces exactly:
+
+        multipart/alternative
+          text/plain
+          text/calendar; method=REQUEST; charset=UTF-8
+
+    Order matters -- text/calendar last, as the richest alternative --
+    and so does what is absent. Adding any attachment, including a copy
+    of this same calendar, wraps the whole thing in multipart/mixed and
+    Gmail then renders the file instead of the invitation.
 
     Always METHOD=REQUEST, matching the calendar body. This tool only
     invites; it never withdraws an event from a recipient's calendar.
@@ -86,18 +106,10 @@ def build_message(
     message["To"] = ", ".join(recipients)
     message.set_content(body)
 
-    # The inline calendar part. This `method` must match the METHOD inside
-    # the calendar body -- a mismatch is what makes a client fall back to
-    # showing a bare .ics attachment instead of an invitation.
+    # This `method` must match the METHOD inside the calendar body -- a
+    # mismatch is another way a client falls back to showing a bare .ics
+    # file instead of an invitation.
     message.add_alternative(ics, subtype="calendar", params={"method": method, "charset": "UTF-8"})
-
-    message.add_attachment(
-        ics.encode("utf-8"),
-        maintype="text",
-        subtype="calendar",
-        filename=filename,
-        params={"method": method},
-    )
     return message
 
 
