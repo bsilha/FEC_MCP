@@ -577,6 +577,12 @@ HEADER_CSS = f"""
    deadlines" render at 20px -- while repeating, in the loudest type on
    the page, what the navy bar an inch above already says. It matches
    those section heads now, and the blurb drops to caption scale. */
+/* 20px, matching the section heads in the working UI ("Your committees",
+   "Upcoming deadlines"). The 30px version this replaces was set when the
+   chat page opened with nothing below it and a small heading looked
+   marooned; measured against the page as it stands, it ran to roughly
+   double the largest heading anywhere else. */
+.fec-page-heading h2 {{ font-size: 20px; font-weight: 700; margin: 0 0 6px; }}
 .fec-page-heading p {{
     font-size: 14px; color: #5B6B7A; margin: 0; max-width: 82ch; line-height: 1.5;
 }}
@@ -2377,12 +2383,11 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         ""
         if on_deadlines
         else (
-            # No title. The navy bar an inch above already carries the
-            # name, and repeating it in the largest type on the page said
-            # nothing twice. The blurb leads instead, and does more work
-            # for it: it names both halves of the app, so the Deadlines
-            # tab is discoverable to somebody who has never opened it.
-            '<div class="fec-page-heading">'
+            # Names this screen, not the app. The app's name is already in
+            # the navy bar an inch above, and repeating it here said
+            # nothing twice in the largest type on the page. Deliberately
+            # shares no words with the blurb below it for the same reason.
+            '<div class="fec-page-heading"><h2>Compliance chat</h2>'
             "<p>Ask a campaign finance question and get an answer cited to the FEC "
             "guides, or open Deadlines to see what each committee owes and when. "
             "Demo build, not for production use.</p></div>"
@@ -2434,17 +2439,22 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
             for s in sources_result["sources"]:
                 by_jurisdiction.setdefault(s["jurisdiction"], []).append(s)
             # Every jurisdiction row is the same st.expander widget -- same
-            # label font/size for "Federal" as for "California" or "Georgia"
-            # by construction, rather than the old hand-styled chips (one
-            # color for federal, another for states) that made federal read
-            # as visually distinct. Federal starts expanded since it's what
-            # most people are looking for; states start collapsed, since a
-            # flat list of all 32 loaded PDFs at once was the original
-            # "cluttered" complaint this replaces.
+            # label font/size for "Federal" as for "California" or
+            # "Georgia" by construction, rather than the old hand-styled
+            # chips (one color for federal, another for states) that made
+            # federal read as visually distinct.
+            #
+            # All of them start closed, federal included. Federal used to
+            # open on load, on the reasoning that it is what most people
+            # want -- but it holds 22 documents, so opening it pushed
+            # every other jurisdiction below the fold and made the sidebar
+            # look like a long federal list rather than a short index of
+            # what is loaded. Closed, the whole index fits at a glance,
+            # and each row already says how many documents it holds.
             for jurisdiction in sorted(by_jurisdiction, key=_jurisdiction_sort_key):
                 srcs = by_jurisdiction[jurisdiction]
                 label = f"{_jurisdiction_label(jurisdiction)} ({len(srcs)})"
-                with st.expander(label, expanded=(jurisdiction == "federal")):
+                with st.expander(label, expanded=False):
                     for s in srcs:
                         href = _pdf_url(s["source"])
                         title = html.escape(s["title"])
