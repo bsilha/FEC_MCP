@@ -120,6 +120,17 @@ fec-mcp
 | `get_reporting_calendar` | FEC reporting and election deadline dates |
 | `search_advisory_opinions` / `get_advisory_opinion` | FEC Advisory Opinions -- rulings on specific factual scenarios (e.g. "can a campaign accept cryptocurrency donations"), as distinct from the general compliance rules in the rulebook PDFs |
 
+**Deadlines and calendar invites:**
+
+| Tool | Purpose |
+| --- | --- |
+| `get_committee_deadlines` | Which filing deadlines actually bind one committee, given where it is in its cycle -- and which were ruled out, with the reason for each |
+| `send_deadline_invites` | Email those deadlines as calendar invitations. Defaults to `send=False`; the only tool here with an outside side effect |
+
+See [`docs/TOOLS.md`](docs/TOOLS.md) for the full reference, including
+arguments and the distinction between the tools that fetch and the one
+that decides.
+
 ## Notes on scope
 
 - **No hardcoded contribution limits or rule text.** OpenFEC's live API has
