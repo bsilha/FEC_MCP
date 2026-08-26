@@ -430,3 +430,57 @@ def test_the_agenda_row_shows_the_us_ordered_date():
            "deadline": "Post-General Report Due", "report_type": "post_general"}
     assert "11-20-2026" in demo_app._agenda_row_html(row)
     assert "2026-11-20" not in demo_app._agenda_row_html(row)
+
+
+# -- sending to several committees at once ----------------------------------
+
+
+class _Entry:
+    def __init__(self, name):
+        self.name = name
+
+
+def test_merging_invite_results_keeps_every_committees_invitations():
+    merged = demo_app._merge_invite_results([
+        (_Entry("CRANE"), {"would_invite": [{"summary": "a"}], "recipients": ["x@y.com"]}),
+        (_Entry("ACTBLUE"), {"would_invite": [{"summary": "b"}, {"summary": "c"}],
+                             "recipients": ["x@y.com"]}),
+    ])
+
+    assert len(merged["would_invite"]) == 3
+    # the same address on both must not appear twice
+    assert merged["recipients"] == ["x@y.com"]
+
+
+def test_one_committees_failure_survives_into_the_merged_result():
+    """The case that matters. A partial failure reported as success would
+    leave the registry believing those invitations went out, so the next
+    run skips re-sending them -- one visible failure becoming a
+    permanently missing calendar entry."""
+    merged = demo_app._merge_invite_results([
+        (_Entry("CRANE"), {"sent": True, "note": "2 sent", "recipients": ["x@y.com"]}),
+        (_Entry("ACTBLUE"), {"error": "SMTP refused the connection"}),
+    ])
+
+    assert merged["errors"] == ["ACTBLUE: SMTP refused the connection"]
+    assert "CRANE: 2 sent" in merged["note"]
+
+
+def test_stale_deadlines_from_every_committee_are_carried_through():
+    """Nothing withdraws these from a calendar, so a merged send must not
+    drop one committee's list because another had none."""
+    merged = demo_app._merge_invite_results([
+        (_Entry("CRANE"), {"no_longer_applies_remove_manually": [{"summary": "12G"}]}),
+        (_Entry("ACTBLUE"), {}),
+        (_Entry("AOC"), {"no_longer_applies_remove_manually": [{"summary": "30G"}]}),
+    ])
+
+    assert len(merged["no_longer_applies_remove_manually"]) == 2
+
+
+def test_merging_nothing_reports_nothing_sent():
+    merged = demo_app._merge_invite_results([])
+
+    assert merged["sent"] is False
+    assert merged["would_invite"] == []
+    assert "note" not in merged

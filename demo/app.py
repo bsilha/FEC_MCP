@@ -1573,8 +1573,11 @@ def _committee_step() -> dict[str, Any] | None:  # pragma: no cover -- Streamlit
             # changes is a different widget, which is the one reliable way
             # to get an empty box back.
             query = st.text_input(
-                "Add a committee — name or FEC ID",
-                placeholder="Eli Crane for Congress    —or—    C00784934",
+                "Add FEC committee name or ID",
+                # Deliberately fictional. A placeholder naming a real
+                # committee and its real ID reads as an endorsement, or
+                # as a worked example someone might actually search for.
+                placeholder="George Washington for Congress    —or—    C00123456",
                 help=(
                     "Matches the committee's own name or FEC ID. The FEC's search also "
                     "returns committees matching elsewhere in their records, such as the "
@@ -1726,14 +1729,30 @@ def _roster_header() -> None:  # pragma: no cover -- Streamlit UI
     tooltips: what each status changes (seven sentences, one per option),
     and why the district box is only for House committees.
     """
-    detail = " · ".join(f"{label}: {_STATUS_DETAIL[value]}" for value, label, _, _ in STATUS_CHOICES)
+    # One status per line. Joined with a separator it arrived as a single
+    # 400-character paragraph that the browser wrapped wherever it liked
+    # -- unreadable at exactly the moment someone is comparing seven
+    # options.
+    #
+    # Built as &#10; entities rather than real newlines, and escaped
+    # line-by-line so the entities survive: a literal newline inside an
+    # attribute does not make it through st.markdown's own pass intact,
+    # while the entity is just another character on one line of HTML. The
+    # browser turns it back into a line break in the native tooltip.
+    detail = "&#10;".join(
+        ["What each status changes:", ""]
+        + [
+            html.escape(f"• {label} — {_STATUS_DETAIL[value]}", quote=True)
+            for value, label, _, _ in STATUS_CHOICES
+        ]
+    )
     cols = st.columns(_ROSTER_COLUMNS, vertical_alignment="bottom")
     for col, text in zip(
         cols,
         [
             "Committee",
             "Where it is in the cycle "
-            f'<span title="{html.escape(detail, quote=True)}">what each means</span>',
+            f'<span title="{detail}">what each means</span>',
             "State",
             f'<span class="hdr" title="{html.escape(_DISTRICT_NOTE, quote=True)}">District</span>',
             "",
@@ -1972,50 +1991,64 @@ def _ruled_out_panel(ruled_out) -> None:  # pragma: no cover -- Streamlit UI
     this committee lost its primary", which is a statement someone can
     disagree with. That is the point.
 
-    Collapsed, because it is long by nature -- every date on the FEC's
-    calendar that was considered and set aside, for each committee.
+    Collapsed, and then collapsed again per committee. Every date on the
+    FEC's calendar that was considered and set aside, for every committee,
+    is a long list by nature -- at six committees it ran past a screen and
+    a half as one flat run, which made the panel something people closed
+    rather than read. One folder per committee turns it into a list of
+    names you can open the one you doubt.
 
-    The label deliberately carries no count. An expander re-reads whether
-    it should be open whenever its label changes, so a count would slam
-    this shut the moment anything upstream changed while somebody was
-    reading it.
+    The outer label deliberately carries no count. An expander re-reads
+    whether it should be open whenever its label changes, so a count there
+    would slam the whole panel shut the moment anything upstream changed
+    while somebody was reading it. The inner labels do carry counts: they
+    default to closed anyway, so the same re-read costs nothing, and the
+    count is what tells you which committee is worth opening.
     """
     if not ruled_out:
         return
 
     ruled_out.sort(key=lambda r: (r["_committee"], r.get("date") or ""))
+
+    by_committee: dict[str, list[dict[str, Any]]] = {}
+    for row in ruled_out:
+        by_committee.setdefault(row["_committee"], []).append(row)
+
     with st.expander("Checked and not due — and why"):
         st.caption(
-            f"{len(ruled_out)} calendar entries were considered and ruled out. "
-            "If one of these should apply, the committee's status or race is "
-            "probably not what the roster says."
+            f"{len(ruled_out)} calendar entries across {len(by_committee)} committee(s) "
+            "were considered and ruled out. If one of these should apply, that "
+            "committee's status or race is probably not what the roster says."
         )
-        current = None
-        parts: list[str] = []
-        for row in ruled_out:
-            if row["_committee"] != current:
-                current = row["_committee"]
-                parts.append(
-                    f'<div class="fec-dl-month">{html.escape(current)}</div>'
+        for committee, rows in by_committee.items():
+            with st.expander(f"{committee} — {len(rows)} not due"):
+                parts = [
+                    '<div class="fec-dl-row">'
+                    f'<span class="fec-dl-date">{html.escape(_us_date(row.get("date")))}</span>'
+                    f'<span class="fec-dl-name">{html.escape(str(row.get("deadline") or ""))}</span>'
+                    f'<span class="fec-dl-why">{html.escape(str(row.get("reason") or ""))}</span>'
+                    "</div>"
+                    for row in rows
+                ]
+                st.markdown(
+                    f'<div class="fec-dl-wrap">{"".join(parts)}</div>',
+                    unsafe_allow_html=True,
                 )
-            parts.append(
-                '<div class="fec-dl-row">'
-                f'<span class="fec-dl-date">{html.escape(_us_date(row.get("date")))}</span>'
-                f'<span class="fec-dl-name">{html.escape(str(row.get("deadline") or ""))}</span>'
-                f'<span class="fec-dl-why">{html.escape(str(row.get("reason") or ""))}</span>'
-                "</div>"
-            )
-        st.markdown(
-            f'<div class="fec-dl-wrap">{"".join(parts)}</div>', unsafe_allow_html=True
-        )
+
+
+_ALL_COMMITTEES = "All committees"
 
 
 def _invite_step(entries) -> None:  # pragma: no cover -- Streamlit UI
-    """Send invitations for ONE committee at a time.
+    """Send invitations for one committee, or for all of them at once.
 
-    Recipients differ per committee -- each campaign has its own treasurer
-    and counsel -- so a single "send everything to everyone" action would
-    email one client's filing schedule to another client's staff.
+    One at a time is still the default, because recipients usually differ
+    per committee: each campaign has its own treasurer and counsel, and
+    sending everything to everyone puts one client's filing schedule in
+    another client's inbox. "All committees" exists for the case where
+    the recipients really are the same people -- a firm's own staff -- and
+    it says plainly who is about to receive what, rather than relying on
+    whoever picked it to remember.
     """
     ready = [e for e in entries if e.has_status]
     if not ready:
@@ -2023,17 +2056,51 @@ def _invite_step(entries) -> None:  # pragma: no cover -- Streamlit UI
 
     st.markdown("**Send calendar invites**", unsafe_allow_html=True)
     by_label = {f"{e.name} · {_STATUS_LABELS[e.status]}": e for e in ready}
-    chosen_label = st.selectbox("Committee", options=list(by_label), key="dl_invite_committee")
-    entry = by_label[chosen_label]
+    options = ([_ALL_COMMITTEES] if len(ready) > 1 else []) + list(by_label)
+    # Listed first so it is findable, but never the starting selection.
+    # One committee at a time is the safe default: it is the option that
+    # cannot put one client's filing schedule in another client's inbox,
+    # and "send everything to everyone" should be something a person
+    # chose, not something they failed to notice was already chosen.
+    chosen_label = st.selectbox(
+        "Committee",
+        options=options,
+        index=1 if options[0] == _ALL_COMMITTEES else 0,
+        key="dl_invite_committee",
+    )
+
+    everyone = chosen_label == _ALL_COMMITTEES
+    targets = ready if everyone else [by_label[chosen_label]]
+    # One key for the all-committees box, one per committee otherwise, so
+    # a list typed for a single campaign is not silently reused for all.
+    target_key = "ALL" if everyone else targets[0].committee_id
 
     raw = st.text_area(
         "Recipients",
         placeholder="treasurer@campaign.com, counsel@firm.com",
-        help="Separate addresses with commas or new lines. Sent for this committee only.",
-        key=f"dl_recipients_{entry.committee_id}",
+        help=(
+            "Separate addresses with commas or new lines. "
+            + (
+                "Every address gets every committee's deadlines."
+                if everyone
+                else "Sent for this committee only."
+            )
+        ),
+        key=f"dl_recipients_{target_key}",
         height=68,
     )
     recipients = [a.strip() for a in re.split(r"[,\s]+", raw or "") if a.strip()]
+
+    if everyone:
+        # Said before the send, not after. This is the one action here
+        # that can put a client's filing schedule in front of somebody
+        # who works for a different client.
+        st.warning(
+            f"**Every address below will receive all {len(targets)} committees' "
+            "deadlines** — "
+            + ", ".join(e.name for e in targets)
+            + ". Use a single committee instead if the recipients differ."
+        )
 
     # Not disabled on `recipients`: Streamlit commits a text area only on
     # blur, so a button disabled from that value is still disabled at the
@@ -2042,7 +2109,7 @@ def _invite_step(entries) -> None:  # pragma: no cover -- Streamlit UI
     with left:
         preview_clicked = st.button("Preview invitations", use_container_width=True)
     preview = st.session_state.get("dl_preview")
-    fresh = preview if (preview or {}).get("_for") == entry.committee_id else None
+    fresh = preview if (preview or {}).get("_for") == target_key else None
     with right:
         send_clicked = st.button(
             f"Send to {len(recipients)} recipient(s)" if recipients else "Send invitations",
@@ -2055,22 +2122,28 @@ def _invite_step(entries) -> None:  # pragma: no cover -- Streamlit UI
             st.warning("Add at least one email address first.")
         else:
             sending = bool(send_clicked)
-            with st.spinner("Sending..." if sending else "Building invitations..."):
-                result = _run_async(
-                    server.send_deadline_invites,
-                    committee=entry.committee_id, status=entry.status,
-                    recipients=recipients, state=entry.state, district=entry.district,
-                    months_ahead=cycle_horizon_months(), send=sending,
-                )
-            st.session_state["dl_preview"] = {**result, "_for": entry.committee_id}
+            verb = "Sending" if sending else "Building invitations"
+            results = []
+            with st.spinner(f"{verb}..."):
+                for entry in targets:
+                    outcome = _run_async(
+                        server.send_deadline_invites,
+                        committee=entry.committee_id, status=entry.status,
+                        recipients=recipients, state=entry.state, district=entry.district,
+                        months_ahead=cycle_horizon_months(), send=sending,
+                    )
+                    results.append((entry, outcome))
+            st.session_state["dl_preview"] = {
+                **_merge_invite_results(results), "_for": target_key
+            }
             st.rerun()
 
     if not fresh:
         st.caption("Preview first — nothing is emailed until you send.")
         return
 
-    if fresh.get("error"):
-        st.error(fresh["error"])
+    for problem in fresh.get("errors") or ([fresh["error"]] if fresh.get("error") else []):
+        st.error(problem)
 
     stale = fresh.get("no_longer_applies_remove_manually") or []
     if stale:
@@ -2085,13 +2158,46 @@ def _invite_step(entries) -> None:  # pragma: no cover -- Streamlit UI
             )
         )
 
+    who = f"all {len(targets)} committees" if everyone else targets[0].name
     if fresh.get("sent"):
         st.success(fresh.get("note") or "Invitations sent.")
     elif fresh.get("would_invite"):
         st.info(
             f"Ready to send {len(fresh['would_invite'])} invitation(s) for "
-            f"{entry.name} to {', '.join(fresh.get('recipients') or [])}."
+            f"{who} to {', '.join(fresh.get('recipients') or [])}."
         )
+
+
+def _merge_invite_results(results) -> dict[str, Any]:
+    """Fold one send_deadline_invites result per committee into one.
+
+    Kept whole rather than summarised. A committee that failed while the
+    others succeeded has to survive into the merged result, or an "all
+    committees" send would report success for a set that was partly not
+    sent -- and a false delivery record is worse here than a visible
+    failure, because the registry then skips re-sending.
+    """
+    merged: dict[str, Any] = {
+        "sent": False, "would_invite": [], "no_longer_applies_remove_manually": [],
+        "recipients": [], "errors": [], "notes": [],
+    }
+    for entry, outcome in results:
+        if outcome.get("error"):
+            merged["errors"].append(f"{entry.name}: {outcome['error']}")
+            continue
+        merged["sent"] = merged["sent"] or bool(outcome.get("sent"))
+        merged["would_invite"].extend(outcome.get("would_invite") or [])
+        merged["no_longer_applies_remove_manually"].extend(
+            outcome.get("no_longer_applies_remove_manually") or []
+        )
+        for address in outcome.get("recipients") or []:
+            if address not in merged["recipients"]:
+                merged["recipients"].append(address)
+        if outcome.get("note"):
+            merged["notes"].append(f"{entry.name}: {outcome['note']}")
+    if merged["notes"]:
+        merged["note"] = "\n\n".join(merged["notes"])
+    return merged
 
 
 def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
@@ -2168,7 +2274,7 @@ def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tes
 
     st.divider()
 
-    st.markdown("#### Everything due · rest of the cycle")
+    st.markdown("#### Upcoming deadlines")
     if missing:
         # What the red boxes above cannot say: that this list is short a
         # committee. Naming them here is not a duplicate of the outline --
