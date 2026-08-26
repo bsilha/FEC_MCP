@@ -192,20 +192,6 @@ _STATUS_STALE_AFTER_DAYS = 90
 
 DEADLINE_CSS = f"""
 <style>
-/* Reclaim the top of the page. Rendered only on this view, so the chat
-   page keeps its own spacing.
-
-   Two separate costs, both measured live. Streamlit's default 96px of
-   block padding was sized for a page that opens with a title; this one
-   opens with a working list, and the fixed header bar above it already
-   ends well clear of the content. And every st.markdown() that injects
-   nothing but a <style> block still renders an element container --
-   zero-height, but each one consumes a 16px flex gap, which came to 64px
-   of nothing before the first real widget. Hiding those containers does
-   not disable their rules: a <style> element applies whether or not its
-   ancestors are displayed. */
-[data-testid="stMainBlockContainer"] {{ padding-top: 1.6rem; }}
-[data-testid="stElementContainer"]:has(style) {{ display: none; }}
 /* Roster rows are a table, not a form -- one line each, so eight
    committees stay readable and the agenda below stays on screen. */
 .fec-roster-head {{
@@ -570,12 +556,46 @@ HEADER_CSS = f"""
    contained preview card, but at real full-width scale the same sizes
    read as tiny text floating in a mostly-empty page -- per explicit
    user feedback ("should scale up... too much whitespace"). */
-.fec-page-heading h2 {{ font-size: 30px; font-weight: 700; margin: 0 0 8px; }}
-.fec-page-heading p {{ font-size: 16px; color: #5B6B7A; margin: 0; max-width: 62ch; }}
+/* Reclaim the top of every page. Two separate costs, both measured live.
+   Streamlit's default 96px of block padding assumes a page that opens
+   with a title, and the fixed header bar above already ends clear of the
+   content. And every st.markdown() that injects nothing but a <style>
+   block still renders an element container -- zero-height, but each
+   consumes a 16px flex gap, which came to 64px of nothing before the
+   first real widget. Hiding those containers does not disable their
+   rules: a <style> element applies whether or not its ancestors are
+   displayed. (Both rules were scoped to the deadline view first; the
+   chat page needed them just as much.) */
+[data-testid="stMainBlockContainer"] {{ padding-top: 1.6rem; }}
+[data-testid="stElementContainer"]:has(style) {{ display: none; }}
+
+/* Sized to the page it sits on, not to the empty space it used to sit
+   in. This was 30px, set when the chat page opened with nothing below it
+   and a small heading looked marooned. The page has content now, and at
+   30px the title ran to roughly double the largest heading in the
+   working UI -- section heads like "Your committees" and "Upcoming
+   deadlines" render at 20px -- while repeating, in the loudest type on
+   the page, what the navy bar an inch above already says. It matches
+   those section heads now, and the blurb drops to caption scale. */
+.fec-page-heading h2 {{ font-size: 20px; font-weight: 700; margin: 0 0 6px; }}
+.fec-page-heading p {{
+    font-size: 14px; color: #5B6B7A; margin: 0; max-width: 78ch; line-height: 1.5;
+}}
 
 .fec-side-label {{
     font-size: 10.5px; font-weight: 700; text-transform: uppercase;
     letter-spacing: .07em; color: #5B6B7A; margin: 16px 0 8px;
+}}
+/* The same label treatment as the sidebar's, one step up in size because
+   it sits in the main column at full width rather than a 300px rail.
+   Qualified by the markdown container it lands in: Streamlit styles its
+   own `p` from inside [data-testid="stMarkdownContainer"], which is one
+   specificity step above a bare class and silently won -- the label
+   rendered at Streamlit's 16px body size. The sidebar copy of this rule
+   escapes that only because it is itself qualified by the sidebar. */
+[data-testid="stMarkdownContainer"] p.fec-empty-label {{
+    font-size: 11.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .07em; color: #5B6B7A; margin: 14px 0 10px;
 }}
 /* st.text_input's own label ("Your Anthropic API key") isn't something we
    render ourselves -- Streamlit owns that markup -- but stWidgetLabel is
@@ -2200,6 +2220,35 @@ def _merge_invite_results(results) -> dict[str, Any]:
     return merged
 
 
+def _example_questions() -> None:  # pragma: no cover -- Streamlit UI
+    """The chat page's empty state: four questions worth asking.
+
+    Two per row rather than a single column. Each one is a full sentence,
+    and four full-width buttons stacked down an empty page read as a menu
+    of the only four things the tool can do -- which is the opposite of
+    the intended message.
+    """
+    st.markdown(
+        '<p class="fec-empty-label">Try asking</p>', unsafe_allow_html=True
+    )
+    for row_start in range(0, len(EXAMPLE_QUESTIONS), 2):
+        for column, question in zip(
+            st.columns(2), EXAMPLE_QUESTIONS[row_start:row_start + 2]
+        ):
+            with column:
+                if st.button(
+                    question,
+                    key=f"example_question_{row_start}_{question[:18]}",
+                    use_container_width=True,
+                ):
+                    st.session_state["chat_input"] = question
+                    st.rerun()
+    st.caption(
+        "Or ask anything else below. Answers about the rulebooks come with the "
+        "page they came from."
+    )
+
+
 def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     """Several committees, each with its own status, in one agenda."""
     st.markdown(DEADLINE_CSS, unsafe_allow_html=True)
@@ -2383,12 +2432,9 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         else:
             st.write(sources_result.get("message", "None loaded."))
 
-        st.markdown('<p class="fec-side-label">Try asking</p>', unsafe_allow_html=True)
-        for i, question in enumerate(EXAMPLE_QUESTIONS):
-            if st.button(question, key=f"example_question_{i}", use_container_width=True):
-                st.session_state["chat_input"] = question
-                st.rerun()
-
+        # "Try asking" used to live here. It moved into the chat page's
+        # own empty state, where the space it fills is the space someone
+        # is actually looking at before their first question.
         if st.button("Clear conversation"):
             st.session_state.messages = []
             st.rerun()
@@ -2409,6 +2455,18 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
+
+    # The empty state. Before the first question this column is a large
+    # blank rectangle with a chat box pinned to the bottom of it, and the
+    # examples were off in the sidebar under the rulebook list -- below
+    # the fold, next to reference material, and nowhere near where
+    # somebody is looking when they cannot think what to ask.
+    #
+    # They show only while the conversation is empty, which is the only
+    # time they are the most useful thing that could occupy this space.
+    # "Clear conversation" brings them back.
+    if not st.session_state.messages:
+        _example_questions()
 
     for turn in st.session_state.messages:
         with st.chat_message(turn["role"]):
