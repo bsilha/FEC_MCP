@@ -577,9 +577,8 @@ HEADER_CSS = f"""
    deadlines" render at 20px -- while repeating, in the loudest type on
    the page, what the navy bar an inch above already says. It matches
    those section heads now, and the blurb drops to caption scale. */
-.fec-page-heading h2 {{ font-size: 20px; font-weight: 700; margin: 0 0 6px; }}
 .fec-page-heading p {{
-    font-size: 14px; color: #5B6B7A; margin: 0; max-width: 78ch; line-height: 1.5;
+    font-size: 14px; color: #5B6B7A; margin: 0; max-width: 82ch; line-height: 1.5;
 }}
 
 .fec-side-label {{
@@ -2220,6 +2219,30 @@ def _merge_invite_results(results) -> dict[str, Any]:
     return merged
 
 
+def _chat_input_key() -> str:
+    """The chat box's widget key for this round.
+
+    It carries a counter because seeding the box by assignment only works
+    while the value actually changes. Clearing the box by hand does not
+    clear the session-state entry behind it -- a chat input reports on
+    submit, not on every keystroke -- so the entry still held the last
+    question that was clicked. Clicking the same question again assigned
+    the same string, Streamlit saw no change, and the box stayed empty.
+
+    Bumping the counter makes a different widget, which takes its initial
+    value from state on the way in. Same fix, and the same cause, as the
+    committee search box that would not clear after an add.
+    """
+    return f"chat_input_{st.session_state.get('chat_round', 0)}"
+
+
+def _fill_chat_box(question: str) -> None:  # pragma: no cover -- Streamlit UI
+    """Put a suggested question in the chat box, ready to send or edit."""
+    st.session_state["chat_round"] = st.session_state.get("chat_round", 0) + 1
+    st.session_state[_chat_input_key()] = question
+    st.rerun()
+
+
 def _example_questions() -> None:  # pragma: no cover -- Streamlit UI
     """The chat page's empty state: four questions worth asking.
 
@@ -2241,12 +2264,7 @@ def _example_questions() -> None:  # pragma: no cover -- Streamlit UI
                     key=f"example_question_{row_start}_{question[:18]}",
                     use_container_width=True,
                 ):
-                    st.session_state["chat_input"] = question
-                    st.rerun()
-    st.caption(
-        "Or ask anything else below. Answers about the rulebooks come with the "
-        "page they came from."
-    )
+                    _fill_chat_box(question)
 
 
 def _deadlines_view() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
@@ -2359,10 +2377,15 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
         ""
         if on_deadlines
         else (
-            '<div class="fec-page-heading"><h2>FEC Compliance Assistant</h2>'
-            "<p>Same tools as the fec-mcp MCP server &mdash; rulebook PDF search + live "
-            "OpenFEC data &mdash; wired into a plain chat page for demo purposes. Not for "
-            "production use.</p></div>"
+            # No title. The navy bar an inch above already carries the
+            # name, and repeating it in the largest type on the page said
+            # nothing twice. The blurb leads instead, and does more work
+            # for it: it names both halves of the app, so the Deadlines
+            # tab is discoverable to somebody who has never opened it.
+            '<div class="fec-page-heading">'
+            "<p>Ask a campaign finance question and get an answer cited to the FEC "
+            "guides, or open Deadlines to see what each committee owes and when. "
+            "Demo build, not for production use.</p></div>"
         )
     )
     st.markdown(
@@ -2477,7 +2500,8 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
                 st.caption(_md(f"\U0001f527 {call['name']}({', '.join(f'{k}={v!r}' for k, v in call['input'].items())})"))
 
     prompt = st.chat_input(
-        "Ask a federal (or loaded-state) campaign finance question...", key="chat_input"
+        "Ask a federal (or loaded-state) campaign finance question...",
+        key=_chat_input_key(),
     )
     if not prompt:
         return
