@@ -2510,11 +2510,17 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     # the fold, next to reference material, and nowhere near where
     # somebody is looking when they cannot think what to ask.
     #
-    # They show only while the conversation is empty, which is the only
-    # time they are the most useful thing that could occupy this space.
-    # "Clear conversation" brings them back.
+    # Held in a slot that can be emptied later, rather than rendered
+    # straight out. On the run that answers the FIRST question, `messages`
+    # is still empty here -- the new turn is not appended until the very
+    # end of the script -- so the examples rendered, the answer appeared
+    # underneath them, and nothing reran to take them away. They sat there
+    # beside the first answer until the next interaction. The slot is
+    # cleared below the moment a question is known to be in flight.
+    examples_slot = st.empty()
     if not st.session_state.messages:
-        _example_questions()
+        with examples_slot.container():
+            _example_questions()
 
     for turn in st.session_state.messages:
         with st.chat_message(turn["role"]):
@@ -2530,6 +2536,10 @@ def main() -> None:  # pragma: no cover -- Streamlit UI, not unit tested
     )
     if not prompt:
         return
+
+    # A question is being asked, so the empty state is over -- even though
+    # the conversation this run started from was empty.
+    examples_slot.empty()
 
     if not has_key:
         with st.chat_message("user"):
