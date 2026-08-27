@@ -37,14 +37,20 @@ def wired(monkeypatch):
     return _install
 
 
+# Shaped from a real /rad-analyst/ response, captured live. The types
+# matter as much as the keys: telephone_ext comes back as a NUMBER.
 ANALYST = {
+    "analyst_id": 790053.0,
+    "analyst_short_id": 403.0,
+    "assignment_update_date": "2026-02-01",
     "committee_id": "C00401224",
+    "committee_name": "A COMMITTEE",
+    "email": "danalyst@fec.gov",
     "first_name": "Dana",
     "last_name": "Reyes",
-    "telephone_ext": "1234",
-    "rad_branch": "Branch 2",
+    "rad_branch": "Authorized",
+    "telephone_ext": 1234.0,
     "title": "Senior Campaign Finance Analyst",
-    "assignment_update_date": "2026-02-01",
 }
 
 
@@ -55,7 +61,9 @@ async def test_reports_the_assigned_analyst(wired):
 
     assert result["analyst"]["name"] == "Dana Reyes"
     assert result["analyst"]["extension"] == "1234"
-    assert result["analyst"]["branch"] == "Branch 2"
+    assert result["analyst"]["branch"] == "Authorized"
+    assert result["analyst"]["email"] == "danalyst@fec.gov"
+    assert result["committee_name"] == "A COMMITTEE"
 
 
 @pytest.mark.asyncio
@@ -148,3 +156,44 @@ async def test_a_missing_committee_id_is_refused_without_calling_out(wired):
 
     assert "error" in result
     assert client.asked_for is None
+
+
+@pytest.mark.asyncio
+async def test_a_numeric_extension_is_rendered_dialable(wired):
+    """Regression guard from a live check. OpenFEC sends telephone_ext as
+    a number, so str() on it produced "ask for extension 1170.0" -- which
+    cannot be dialled, and reads as bad data rather than a bug here."""
+    wired([{**ANALYST, "telephone_ext": 1170.0}])
+    result = await server.get_rad_analyst("C00401224")
+
+    assert result["analyst"]["extension"] == "1170"
+    assert "1170.0" not in result["how_to_reach"]
+    assert "extension 1170" in result["how_to_reach"]
+
+
+@pytest.mark.asyncio
+async def test_an_extension_given_as_a_string_is_left_alone(wired):
+    wired([{**ANALYST, "telephone_ext": "1170"}])
+    result = await server.get_rad_analyst("C00401224")
+
+    assert result["analyst"]["extension"] == "1170"
+
+
+@pytest.mark.asyncio
+async def test_the_analysts_email_is_offered_alongside_the_phone(wired):
+    """The FEC gives analysts a direct address, which beats an extension
+    on a switchboard for anything that is not urgent."""
+    wired([ANALYST])
+    result = await server.get_rad_analyst("C00401224")
+
+    assert "danalyst@fec.gov" in result["how_to_reach"]
+
+
+@pytest.mark.asyncio
+async def test_a_record_without_an_email_still_gives_a_way_through(wired):
+    wired([{**ANALYST, "email": None}])
+    result = await server.get_rad_analyst("C00401224")
+
+    assert result["analyst"]["email"] is None
+    assert server.FEC_MAIN_LINE in result["how_to_reach"]
+    assert result["how_to_reach"].endswith(".")

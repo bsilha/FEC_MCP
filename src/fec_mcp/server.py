@@ -540,6 +540,21 @@ _DISBURSEMENT_KEYS = [
 FEC_MAIN_LINE = "1-800-424-9530"
 
 
+def _extension(value: Any) -> str:
+    """Render a telephone extension as something dialable.
+
+    OpenFEC sends this as a NUMBER, not a string: a live check returned
+    telephone_ext = 1170.0, which str() turns into "1170.0" and produced
+    "ask for extension 1170.0". Nobody can dial that, and it is the kind
+    of wrong that reads as a typo in the data rather than a bug here.
+    """
+    if value is None or value == "":
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
 def _analyst_name(record: dict[str, Any]) -> str:
     """Assemble a display name from whichever name fields are present.
 
@@ -622,27 +637,32 @@ async def get_rad_analyst(committee_id: str) -> dict[str, Any]:
     # Most recently assigned first, when the FEC says when.
     scoped.sort(key=lambda r: str(r.get("assignment_update_date") or ""), reverse=True)
     record = scoped[0]
-    extension = str(record.get("telephone_ext") or "").strip()
+    extension = _extension(record.get("telephone_ext"))
+    email = str(record.get("email") or "").strip()
+
+    reach = [f"Call {FEC_MAIN_LINE}" + (f" and ask for extension {extension}" if extension else "")]
+    if email:
+        reach.append(f"or email {email}")
 
     return {
         "committee_id": committee_id,
+        # Echoed back from the FEC's own record. Cheap confirmation that
+        # the ID that was typed is the committee that was meant.
+        "committee_name": record.get("committee_name"),
         "analyst": {
             "name": _analyst_name(record) or "(name not given)",
             "title": record.get("title"),
             "branch": record.get("rad_branch"),
             "extension": extension or None,
+            "email": email or None,
             "assigned_on": record.get("assignment_update_date"),
         },
-        "how_to_reach": (
-            f"Call {FEC_MAIN_LINE}" + (f" and ask for extension {extension}." if extension else ".")
-        ),
+        "how_to_reach": " ".join(reach) + ".",
         "note": (
             "RAD analysts answer questions about a committee's own reports, including "
             "before it files. Confirm the assignment on a recent FEC letter if it "
             "matters -- assignments change."
         ),
-        # The untouched record, since the field names on this endpoint are
-        # not pinned down by a live check yet.
         "raw": record,
         "other_records": scoped[1:],
     }
