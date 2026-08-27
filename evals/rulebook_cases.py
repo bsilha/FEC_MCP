@@ -45,6 +45,7 @@ ALL_TOOLS = (
     "get_committee",
     "get_committee_filings",
     "get_committee_totals",
+    "get_rad_analyst",
     "search_disbursements",
     "search_filings",
     "search_elections",

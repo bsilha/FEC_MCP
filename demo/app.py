@@ -1124,6 +1124,20 @@ def get_committee_totals(committee_id: str, cycle: int | None = None, per_page: 
 
 
 @beta_tool
+def get_rad_analyst(committee_id: str) -> str:
+    """Find the FEC Reports Analysis Division (RAD) analyst assigned to a committee.
+
+    RAD reviews filed reports and sends Requests for Additional
+    Information. A committee can call its assigned analyst directly with
+    questions about its own reports, including before it files.
+
+    Args:
+        committee_id: FEC committee ID, e.g. "C00401224".
+    """
+    return _json(_run_async(server.get_rad_analyst, committee_id=committee_id))
+
+
+@beta_tool
 def search_disbursements(
     committee_id: str,
     recipient_name: str | None = None,
@@ -1447,6 +1461,7 @@ TOOLS = [
     get_committee,
     get_committee_filings,
     get_committee_totals,
+    get_rad_analyst,
     search_disbursements,
     search_filings,
     search_elections,

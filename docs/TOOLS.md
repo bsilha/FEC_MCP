@@ -1,4 +1,4 @@
-# The 19 tools
+# The 20 tools
 
 Every tool is registered in two places from one definition: the MCP server
 (`src/fec_mcp/server.py`, via `@mcp.tool()`) and the Streamlit demo
@@ -53,6 +53,7 @@ only; OpenFEC has no state data.
 | Tool | Purpose |
 | --- | --- |
 | `search_disbursements(committee_id, recipient_name, purpose, dates, amounts, ...)` | Itemized Schedule B spending — the most filterable tool here |
+| `get_rad_analyst(committee_id)` | The Reports Analysis Division analyst assigned to a committee, and the extension to reach them on |
 | `search_filings(committee_id, candidate_id, form_type, cycle, ...)` | Filing search across committees and candidates |
 | `search_elections(state, office, cycle, district, ...)` | Federal races |
 | `get_reporting_calendar(category, min_start_date, max_start_date, ...)` | The FEC's raw deadline calendar |
@@ -89,7 +90,7 @@ meaning to sends nothing; the demo's Preview button depends on that.
 ## Two properties worth keeping
 
 **Only one tool has an outside side effect.** `send_deadline_invites` is
-the single tool that leaves the machine with anything. The other 18 are
+the single tool that leaves the machine with anything. The other 19 are
 read-only. Any new tool that writes, sends, or files should be
 scrutinised against that, because it is currently a very short list.
 

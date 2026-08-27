@@ -115,6 +115,7 @@ fec-mcp
 | `search_candidates` / `get_candidate` / `get_candidate_totals` | Candidate lookup and financials |
 | `search_committees` / `get_committee` / `get_committee_filings` / `get_committee_totals` | PAC/party/campaign committee lookup, filings, financials |
 | `search_disbursements` | Itemized Schedule B disbursements (who a committee paid, and how much) |
+| `get_rad_analyst` | The FEC Reports Analysis Division analyst assigned to a committee -- who reviews its reports and sends RFAIs |
 | `search_filings` | Cross-committee filing search |
 | `search_elections` | Election search by state/office/cycle |
 | `get_reporting_calendar` | FEC reporting and election deadline dates |

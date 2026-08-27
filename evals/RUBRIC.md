@@ -9,7 +9,7 @@ things in developer terms.
 ## What this is
 
 The assistant answers questions about campaign finance rules. To do that,
-it uses **tools**. Think of a toolbox with 19 tools in it. Some tools
+it uses **tools**. Think of a toolbox with 20 tools in it. Some tools
 search rulebook PDFs. Some look up live data from the FEC.
 
 This test asks the assistant 20 questions. Each one is asked the same way
@@ -28,7 +28,7 @@ clears both.
 
 ### 1. Did it pick the right tool?
 
-Picking a tool is a real choice. All 19 tools are on the table for every
+Picking a tool is a real choice. All 20 tools are on the table for every
 question, so the assistant has to know which one fits.
 
 - Did it use at least one tool that fits the question?

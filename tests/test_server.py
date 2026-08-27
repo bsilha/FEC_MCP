@@ -20,6 +20,7 @@ async def test_list_tools_registers_all_expected_tools():
         "get_committee",
         "get_committee_filings",
         "get_committee_totals",
+        "get_rad_analyst",
         "search_disbursements",
         "search_filings",
         "search_elections",

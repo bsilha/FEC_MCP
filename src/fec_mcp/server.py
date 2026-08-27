@@ -534,6 +534,120 @@ _DISBURSEMENT_KEYS = [
 ]
 
 
+# The FEC's published main line. RAD analysts do not have direct outside
+# numbers -- the API returns an extension, which is useless on its own, so
+# the number to dial it from travels with it.
+FEC_MAIN_LINE = "1-800-424-9530"
+
+
+def _analyst_name(record: dict[str, Any]) -> str:
+    """Assemble a display name from whichever name fields are present.
+
+    Not assumed to be first_name/last_name. This is the one field the
+    caller will actually read out loud, and an endpoint this codebase has
+    never called live is not the place to be confident about key names.
+    """
+    parts = [
+        str(record.get(key) or "").strip()
+        for key in ("first_name", "middle_name", "last_name")
+    ]
+    full = " ".join(part for part in parts if part)
+    return full or str(record.get("analyst_name") or record.get("name") or "").strip()
+
+
+@mcp.tool()
+async def get_rad_analyst(committee_id: str) -> dict[str, Any]:
+    """Find the FEC Reports Analysis Division analyst assigned to a committee.
+
+    RAD is the division that reviews filed reports and sends Requests for
+    Additional Information (RFAIs). Every registered committee has an
+    assigned analyst, and a committee can call that analyst directly with
+    questions about its own reports -- before filing, not only after an
+    RFAI arrives.
+
+    Args:
+        committee_id: FEC committee ID, e.g. "C00401224".
+
+    Returns the analyst's name, extension and branch, plus the number to
+    reach them on. Returns a plain "no analyst on file" result rather
+    than an error when the FEC lists none, which is normal for committees
+    that have terminated or have only just registered.
+    """
+    committee_id = (committee_id or "").strip().upper()
+    if not committee_id:
+        return {"error": "committee_id is required, e.g. C00401224."}
+
+    try:
+        data = await (await _client()).get_rad_analyst(committee_id)
+    except OpenFECError as exc:
+        return {"error": str(exc)}
+
+    results = data.get("results") or []
+
+    # This endpoint filters by query parameter, and OpenFEC has been seen
+    # to ignore an unsupported one and serve an unfiltered page instead of
+    # erroring -- that is how a Michigan committee once resolved to a race
+    # in another state. So the filter is not trusted to have been applied:
+    # anything not carrying this committee's ID is discarded, and a result
+    # set that loses everything is reported as unscoped rather than as an
+    # absence, because those two mean very different things.
+    scoped = [
+        record
+        for record in results
+        if str(record.get("committee_id") or "").strip().upper() == committee_id
+    ]
+
+    if results and not scoped:
+        return {
+            "committee_id": committee_id,
+            "analyst": None,
+            "error": (
+                f"The FEC returned {len(results)} analyst record(s), none of them for "
+                f"{committee_id}. Treating the result as unfiltered rather than "
+                "reporting an analyst who belongs to a different committee."
+            ),
+        }
+
+    if not scoped:
+        return {
+            "committee_id": committee_id,
+            "analyst": None,
+            "note": (
+                "The FEC lists no RAD analyst for this committee. That is normal for "
+                "a committee that has terminated or has only just registered. The "
+                f"Reports Analysis Division can still be reached on {FEC_MAIN_LINE}."
+            ),
+        }
+
+    # Most recently assigned first, when the FEC says when.
+    scoped.sort(key=lambda r: str(r.get("assignment_update_date") or ""), reverse=True)
+    record = scoped[0]
+    extension = str(record.get("telephone_ext") or "").strip()
+
+    return {
+        "committee_id": committee_id,
+        "analyst": {
+            "name": _analyst_name(record) or "(name not given)",
+            "title": record.get("title"),
+            "branch": record.get("rad_branch"),
+            "extension": extension or None,
+            "assigned_on": record.get("assignment_update_date"),
+        },
+        "how_to_reach": (
+            f"Call {FEC_MAIN_LINE}" + (f" and ask for extension {extension}." if extension else ".")
+        ),
+        "note": (
+            "RAD analysts answer questions about a committee's own reports, including "
+            "before it files. Confirm the assignment on a recent FEC letter if it "
+            "matters -- assignments change."
+        ),
+        # The untouched record, since the field names on this endpoint are
+        # not pinned down by a live check yet.
+        "raw": record,
+        "other_records": scoped[1:],
+    }
+
+
 def _trim_disbursement(item: dict[str, Any]) -> dict[str, Any]:
     trimmed = _trim(item, _DISBURSEMENT_KEYS)
     recipient_committee = item.get("recipient_committee") or {}

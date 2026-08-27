@@ -396,3 +396,17 @@ class OpenFECClient:
 
     async def get_advisory_opinion(self, ao_no: str) -> dict[str, Any]:
         return await self._get(f"/legal/docs/advisory_opinions/{ao_no}")
+
+    # -- Reports Analysis Division ----------------------------------------
+
+    async def get_rad_analyst(self, committee_id: str) -> dict[str, Any]:
+        """The RAD analyst assigned to a committee.
+
+        This endpoint filters by QUERY PARAMETER, not by URL path, which
+        is the shape that has already burned this codebase once:
+        /candidates/?committee_id= silently ignored the filter and served
+        an unfiltered page instead of erroring. Callers must therefore
+        check that what comes back actually belongs to the committee they
+        asked about -- see server.get_rad_analyst, which does.
+        """
+        return await self._get("/rad-analyst/", {"committee_id": committee_id})
